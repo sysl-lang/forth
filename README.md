@@ -11,18 +11,23 @@ could not say one of those directly, the gap is written up below rather than wor
 
 ```
 $ forth
+forth 0.1.0 -- BYE or Ctrl-D to leave
 : SQUARE  DUP * ;
-7 SQUARE . CR
-49
-: COUNTDOWN  0 SWAP DO I . -1 +LOOP ;
-3 COUNTDOWN CR
-3 2 1 0
+ ok
+7 SQUARE .
+49  ok
+: COUNTDOWN
+...   0 SWAP DO I . -1 +LOOP ;
+ ok
+3 COUNTDOWN
+3 2 1 0  ok
 ```
 
-## Running it
+## Usage
 
 ```
 sysl build .
+./forth                  at a terminal: the REPL
 ./forth file.fs ...      interpret each file in turn, then end
 ./forth < file.fs        interpret standard input to its end
 ```
@@ -31,6 +36,25 @@ sysl build .
 zero, a full dictionary — is reported on a line of its own, the stacks are emptied, any definition
 that was being compiled is taken back out, and interpretation goes on with the next line. Everything
 defined before the fault stays. Names are found whatever their case.
+
+## The REPL
+
+`forth` with no file and a terminal on standard input is a traditional Forth prompt, with the line
+editor from [`sysl-lang/repl`](https://github.com/sysl-lang/repl):
+
+- **Each line is interpreted when it is entered**, and ` ok` follows it when it ran to its end. A
+  fault prints its message instead, and the next line starts fresh with the dictionary as it was.
+- **A definition may span lines.** While a `:` definition is open the prompt is `... `, and each line
+  is compiled as it is entered. Ctrl-C at that prompt abandons the definition; the data stack stays,
+  as `QUIT` leaves it.
+- **Tab completes a word from the dictionary**, built-in or your own, whatever the case you type it
+  in. One candidate replaces the word; several extend it to their common start and then list.
+- **The history is kept in `~/.forth_history`**, one input per line, with Up and Down to walk it. The
+  editing keys are `repl`'s: Emacs-style motion and deletion, Ctrl-L to clear.
+- `BYE` or Ctrl-D on an empty line leaves.
+
+`KEY` and `ACCEPT` read the same terminal, out of raw mode while a line is being interpreted. Piped
+input never starts the REPL: `forth < file.fs` reads the file as it always has, with no prompt.
 
 ## The words
 
@@ -68,12 +92,13 @@ Two modules and a program:
 | | |
 |---|---|
 | `sh.sysl.forth` | the machine, the inner and outer interpreters, every word, and `ScriptConsole` — a console over text in memory. **`@no_alloc` and no capability**, so it builds for `thumb-freestanding-softfp` as it stands |
-| `sh.sysl.forth.host` | `HostConsole`: standard output, standard input as the keyboard, and the source either a file or standard input |
-| `main.sysl` | `forth file.fs` and `forth < file.fs` |
+| `sh.sysl.forth.host` | `HostConsole`: standard output, standard input as the keyboard, and the source either a file or standard input; and the REPL's evaluator, console and completion |
+| `main.sysl` | `forth` at a terminal, `forth file.fs` and `forth < file.fs` |
 
 **The core talks to the world only through `Console`**: `emit`, `send`, `key`, `accept` and
 `refill`. `refill` is where the text interpreter's lines come from and `accept`/`key` are the
-keyboard, so a file being run and the keyboard `ACCEPT` reads stay separate.
+keyboard, so a file being run and the keyboard `ACCEPT` reads stay separate. A front end that has its
+own lines, as the REPL does, hands each one to `interpret_line` instead and gets back how it ended.
 
 **The dictionary is one region the caller hands over**, fixed in size, holding headers, names,
 threads and data. A header is a link cell, a flags byte, a length byte and the name, padded to a
@@ -104,7 +129,7 @@ p_plus(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 
 `become` is sysl's guaranteed tail call — LLVM's `musttail` — so each primitive *replaces* its frame
 with the next one's. A thread of any length runs in one native frame, and the instruction pointer,
-stack pointer and top of stack stay in registers the whole way. On AArch64, at the default `-O1`,
+stack pointer and top of stack stay in registers the whole way. On AArch64, at `-O1`,
 `+` is
 
 ```
@@ -135,7 +160,7 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
 
 ## Tests
 
-`sysl test .` runs 36 tests:
+`sysl test .` runs 47 tests:
 
 - **The Hayes Core tests: 638 of 638 pass.** `tests/tester.fr` and `tests/core.fr` are John Hayes's
   files from [gerryjackson/forth2012-test-suite](https://github.com/gerryjackson/forth2012-test-suite)
@@ -153,7 +178,43 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
 - Every fault: underflow at the prompt and inside a thread, an undefined word at the prompt and inside
   a definition, a dictionary full by `ALLOT` and while compiling, division by zero in each of the
   seven dividing words, return-stack overflow, data-stack overflow, `QUIT`, `ABORT`, `ABORT"`, `BYE`.
-- The host console's line splitting.
+- The host console's line splitting, and `interpret_line`'s answers.
+- The REPL, driven through `repl`'s `MockTerminal` with scripted keys and checked against the exact
+  bytes sent to the terminal: ` ok` after a line, a definition across two lines at the continuation
+  prompt, an error followed by a working line, an error inside a definition, Ctrl-C abandoning a
+  definition, Tab completing a built-in word in lower case and a word of the user's, which names
+  completion offers, `BYE`, and Ctrl-D.
+
+## Speed
+
+Against two mature Forths written in C: [gforth](https://gforth.org) 0.7.3 from Homebrew, both its
+default engine (`gforth`) and its fastest (`gforth-fast`), and
+[pForth](https://github.com/philburk/pforth) built from source at `-O2` (commit
+`e5617638c3a397c644fe82c6301711867a0ca1bf`). This forth is built at `-O2`, which the manifest sets.
+Seconds of wall time, the median of five runs, the systems taking turns within each round:
+
+| benchmark | forth | gforth | gforth-fast | pForth |
+|---|---:|---:|---:|---:|
+| sieve | 1.052 | 1.246 | 0.787 | 2.742 |
+| fib | 0.634 | 0.645 | 0.395 | 1.256 |
+| nest | 0.519 | 0.799 | 0.551 | 1.162 |
+| bubble | 0.817 | 0.616 | 0.345 | 1.168 |
+
+- **sieve** — the BYTE sieve of the primes below 16384, 8000 times over an 8190-byte flag array:
+  `C@`, `C!`, `DO` loops and a `BEGIN … WHILE … REPEAT`.
+- **fib** — `38 FIB`, doubly recursive: calls and returns, and little else.
+- **nest** — two nested `DO` loops around `I J * + 7 XOR`, two hundred million passes.
+- **bubble** — a bubble sort of 1000 cells filled by a linear congruential generator, a hundred
+  times: `@`, `!`, comparisons and a branch per pair.
+
+On an Apple M5 Pro (18 cores, 64 GB), macOS 27.0.1. The sources are in `bench/` and run unchanged on
+all three systems; `zsh bench/run.zsh` builds forth and prints the table, checking that every system
+printed the same answer. Each time includes starting the system, which is a few milliseconds.
+
+**forth is between gforth and gforth-fast**: ahead of the default gforth on three of the four, level
+with gforth-fast on the loop kernel, and about twice as fast as pForth throughout. Every forth
+primitive checks the stack depth before it touches the stack, which gforth-fast does not; where
+gforth-fast's lead on fib and bubble comes from has not been measured yet.
 
 ## What sysl could not say
 
@@ -176,10 +237,6 @@ Found writing this, each with a reduction:
 
 ## What's next
 
-- **A REPL**, through [`sysl-lang/repl`](https://github.com/sysl-lang/repl): a `Console` whose
-  `refill` is the line editor, with `ok` prompts.
-- **A benchmark against gforth and pForth**, for the threaded code against two mature Forths written
-  in C.
 - **A Pico 2 front end**: the core already builds for `thumb-freestanding-softfp` with a
   `ScriptConsole`; what is missing is a `Console` over the USB serial line and a region in SRAM.
 
