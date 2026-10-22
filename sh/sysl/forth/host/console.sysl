@@ -1,0 +1,100 @@
+module sh.sysl.forth.host
+
+import sh.sysl.forth.Console
+import sysl.io.{FdReader, stdin}
+
+// The console of a hosted program: output to standard output, the keyboard from standard input, and
+// the source either a file read whole or standard input too.
+//
+// This is the only part of the program that knows there is an operating system. The core never
+// imports it, so a board supplies a console of its own over its UART and links the same core.
+struct HostConsole
+    // The file being run, when there is one; the source is the keyboard when there is not.
+    script: []const u8
+    from_script: bool
+    at: usize
+
+    input: FdReader
+    buf: [4096]u8
+    pos: usize
+    end: usize
+    eof: bool
+
+// A console whose source is standard input.
+keyboard_console() -> HostConsole = HostConsole([], false, 0, stdin(), [0; 4096], 0, 0, false)
+
+// A console whose source is `text`, the contents of a file, with standard input still the keyboard.
+script_console_of(text: []const u8) -> HostConsole = HostConsole(text, true, 0, stdin(), [0; 4096], 0, 0, false)
+
+// One byte of standard input, or -1 at its end.
+next_byte(c: *HostConsole) -> isize
+    if c.pos >= c.end
+        if c.eof then return -1
+
+        flush()
+
+        val got = c.input.read(c.buf[..])
+
+        if got.len == 0
+            c.eof = true
+            return -1
+
+        c.pos = 0
+        c.end = got.len
+
+    val b = c.buf[c.pos]
+
+    c.pos += 1
+    isize(b)
+
+// A line of standard input into `into`, without its ending; -1 when input has ended before it.
+read_line(c: *HostConsole, into: []u8) -> isize
+    var n: usize = 0
+    var any = false
+
+    loop
+        val b = next_byte(c)
+
+        if b < 0
+            if !any then return -1
+            break
+
+        any = true
+
+        if b == 10 then break
+
+        if b != 13 && n < into.len
+            into[n] = u8(b)
+            n += 1
+
+    isize(n)
+
+impl Console for HostConsole
+    emit(*self, c: u8)
+        val one: [1]u8 = [c]
+
+        putbytes(one[..])
+
+    send(*self, s: []const u8) = putbytes(s)
+
+    key(*self) -> isize = next_byte(self)
+
+    accept(*self, into: []u8) -> isize = read_line(self, into)
+
+    refill(*self, into: []u8) -> isize
+        if !self.from_script then return read_line(self, into)
+
+        if self.at >= self.script.len then return -1
+
+        var i = self.at
+        var n: usize = 0
+
+        while i < self.script.len && self.script[i] != 10
+            if n < into.len && self.script[i] != 13
+                into[n] = self.script[i]
+                n += 1
+
+            i += 1
+
+        self.at = if i < self.script.len then i + 1 else i
+        isize(n)

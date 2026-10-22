@@ -1,0 +1,291 @@
+module sh.sysl.forth
+@no_alloc
+@tests
+
+// The core's own tests, run on the host by `sysl test .`. They allocate nothing either: the machine,
+// its dictionary and the console's output are module storage, which is fresh for every test because
+// every test runs in a process of its own.
+
+var region: [65536]usize
+var vm: Vm
+var out: [16384]u8
+var con: ScriptConsole
+
+// A machine over the whole region, reading `text` as its source.
+start(text: []const u8)
+    con = script_console(text, "".bytes, out[..])
+    boot(&vm, usize(&region[0]), region.len * CELL, &con)
+
+// Run `text` from the outer loop, as a file would be, and answer what it printed.
+transcript(text: string) -> []const u8
+    start(text.bytes)
+    quit(&vm)
+    written(&con)
+
+// Interpret `text` as one more source on a machine that is already running.
+also(text: []const u8)
+    con = script_console(text, "".bytes, out[..])
+    vm.con = &con
+    quit(&vm)
+
+says(text: string, expected: string) -> bool = transcript(text) == expected.bytes
+
+// The top of the stack, which must be the only thing on it.
+only(text: string) -> isize
+    start("".bytes)
+    evaluate(&vm, text.bytes)
+    assert(vm.error == 0, "the text faulted")
+    assert(depth_of(&vm) == 1, "expected exactly one item on the stack")
+    pop(&vm)
+
+// ---------------------------------------------------------------------------------------------------
+// The inner interpreter.
+
+@test("a hand-built thread runs to its halt cell, and NEXT carries the registers")
+inner_thread_runs()
+    start("".bytes)
+
+    var thread: [6]usize = [usize(&p_lit), 40, usize(&p_lit), 2, usize(&p_plus), usize(&p_halt)]
+
+    run(&vm, &thread[0])
+    assert(vm.error == 0, "the thread faulted")
+    assert(depth_of(&vm) == 1, "one item")
+    assert(vm.tos == 42, "40 2 +")
+
+@test("a primitive's fault returns from run with the registers saved")
+inner_fault_returns()
+    start("".bytes)
+
+    var thread: [3]usize = [usize(&p_lit), 7, usize(&p_plus)]
+
+    run(&vm, &thread[0])
+    assert(vm.error == E_UNDERFLOW, "+ with one item underflows")
+    assert(depth_of(&vm) == 1, "the 7 is still there")
+    assert(vm.tos == 7, "and it is the top")
+
+@test("colon definitions nest through docol and EXIT")
+inner_colon_nests()
+    assert(only(": A 1 ; : B A A + ; : C B B * ; C") == 4, "(1+1)*(1+1)")
+
+@test("ten million loop iterations run in one frame, because every NEXT replaces it")
+inner_loop_does_not_grow_the_stack()
+    assert(only(": L 0 10000000 0 DO 1+ LOOP ; L") == 10000000, "the count")
+
+@test("a million nested EXIT-ended calls in a tail chain run without a native stack")
+inner_deep_threads()
+    assert(only(": T1 1+ ; : T2 T1 T1 ; : L 0 1000000 0 DO T2 LOOP ; L") == 2000000, "the count")
+
+@test("EXECUTE runs a primitive and a colon word, and nests")
+inner_execute()
+    assert(only("3 ' DUP EXECUTE *") == 9, "a primitive")
+    assert(only(": SQ DUP * ; 5 ' SQ EXECUTE") == 25, "a colon word")
+    assert(only(": SQ DUP * ; : TWICE DUP >R EXECUTE R> EXECUTE ; 3 ' SQ TWICE") == 81, "nested")
+
+@test("DOES> gives a created word a thread of its own")
+inner_does()
+    assert(only(": K CREATE , DOES> @ 2* ; 21 K Y Y") == 42, "the does thread reads the body")
+
+@test("EXECUTE of a created word and a constant pushes what their code says")
+inner_execute_other_kinds()
+    assert(only("CREATE V ' V EXECUTE ' V >BODY =") == -1, "a created word's body")
+    assert(only("17 CONSTANT K ' K EXECUTE") == 17, "a constant")
+
+@test("LEAVE and UNLOOP leave the return stack as it was")
+inner_leave()
+    assert(only(": F 0 100 0 DO I 5 = IF LEAVE THEN 1+ LOOP ; F") == 5, "LEAVE")
+    assert(only(": G 10 0 DO I 3 = IF I UNLOOP EXIT THEN LOOP 99 ; G") == 3, "UNLOOP EXIT")
+
+@test("+LOOP counts down past zero and ends at the boundary")
+inner_plus_loop()
+    assert(only(": D 0 -10 10 DO 1+ -3 +LOOP ; D") == 7, "10 7 4 1 -2 -5 -8")
+
+// ---------------------------------------------------------------------------------------------------
+// The dictionary.
+
+@test("a header holds its link, flags, length and name, and the token is cell-aligned after it")
+dict_header_layout()
+    start("".bytes)
+
+    val before = vm.latest
+
+    evaluate(&vm, "CREATE ABCDE".bytes)
+
+    val h = vm.latest
+
+    assert(link_of(h) == before, "the link names the previous header")
+    assert(flags_of(h) == 0, "no flags")
+    assert(name_of(h) == "ABCDE".bytes, "the name")
+    assert(xt_of(h) == vm.latest_xt, "the token")
+    assert(xt_of(h) % CELL == 0, "aligned")
+    assert(xt_of(h) == aligned(h + CELL + 2 + 5), "right after the padded name")
+    assert(vm.here == xt_of(h) + 2 * CELL, "the body is two cells past the token")
+    assert(cell_at(xt_of(h))[0] == isize(usize(&dovar)), "CREATE's code")
+
+@test("HERE moves by what , C, ALLOT and ALIGN lay down")
+dict_here_moves()
+    assert(only("HERE 1 , 2 , HERE SWAP -") == isize(2 * CELL), ",")
+    assert(only("HERE 1 C, HERE SWAP -") == 1, "C,")
+    assert(only("HERE 10 ALLOT HERE SWAP -") == 10, "ALLOT")
+    assert(only("HERE -10 ALLOT HERE - ") == 10, "a negative ALLOT gives room back")
+    assert(only("1 C, ALIGN HERE ALIGNED HERE =") == -1, "ALIGN")
+
+@test("a definition cannot see itself, and the newest of two names wins")
+dict_search_order()
+    assert(says(": GDX 123 ; : GDX GDX 234 ; GDX . .", "234 123 "), "the old GDX is called")
+    assert(says(": X 1 ; : X 2 ; X .", "2 "), "the newest X")
+
+@test("IMMEDIATE marks the newest word, and FIND reports it")
+dict_immediate()
+    start("".bytes)
+    evaluate(&vm, ": N ; IMMEDIATE".bytes)
+    assert(flags_of(vm.latest) & F_IMMEDIATE != 0, "flagged")
+    assert(says(": N ; IMMEDIATE : M ; BL WORD N FIND . DROP BL WORD M FIND . DROP", "1 -1 "), "FIND")
+
+@test("names are found whatever their case")
+dict_case()
+    assert(only("2 3 swap drop") == 3, "lower case")
+
+// ---------------------------------------------------------------------------------------------------
+// The number parser.
+
+parses(text: string) -> Option[isize]
+    start("".bytes)
+    number(&vm, text.bytes)
+
+@test("decimal, signed and prefixed numbers parse")
+number_forms()
+    assert(parses("123") == Some(123), "decimal")
+    assert(parses("-45") == Some(-45), "negative")
+    assert(parses("$ff") == Some(255), "hex prefix")
+    assert(parses("#-10") == Some(-10), "decimal prefix and sign")
+    assert(parses("%101") == Some(5), "binary prefix")
+    assert(parses("'A'") == Some(65), "a character")
+    assert(parses("0") == Some(0), "zero")
+
+@test("what is not a whole number does not parse")
+number_refusals()
+    assert(parses("12x") == None, "a trailing letter")
+    assert(parses("-") == None, "a sign alone")
+    assert(parses("$") == None, "a prefix alone")
+    assert(parses("1-2") == None, "a sign inside")
+    assert(parses("") == None, "nothing")
+
+@test("BASE decides which letters are digits")
+number_base()
+    assert(only("HEX FF DECIMAL") == 255, "hex")
+    assert(only("2 BASE ! 1010 DECIMAL") == 10, "binary")
+    assert(says("FF", "FF ?\n"), "not in decimal")
+
+@test(">NUMBER converts a prefix and says where it stopped")
+number_to_number()
+    assert(says("0 0 S\" 123abc\" >NUMBER . DROP . .", "3 0 123 "), "three digits taken")
+
+@test("a cell's whole unsigned range parses and prints")
+number_wide()
+    assert(says("-1 U. 18446744073709551615 .", "18446744073709551615 -1 "), "wraps as a cell")
+
+// ---------------------------------------------------------------------------------------------------
+// Faults: each is reported, the stacks are emptied, and what was defined before it stays.
+
+@test("a stack underflow is reported and the dictionary survives it")
+fault_underflow()
+    assert(says(": FIVE 5 ;\nDROP\nFIVE .", "stack underflow\n5 "), "underflow")
+    assert(says("1 2 + + .", "stack underflow\n"), "inside a line")
+
+@test("an underflow inside a definition stops the thread")
+fault_underflow_in_thread()
+    assert(says(": BAD DROP DROP 99 . ; 1 BAD\n7 .", "stack underflow\n7 "), "the 99 never prints")
+
+@test("an undefined word is named, and the rest of its line is dropped")
+fault_undefined()
+    assert(says("1 FROB 2 .\n3 .", "FROB ?\n3 "), "undefined")
+
+@test("an undefined word inside a definition takes the definition back out")
+fault_undefined_in_definition()
+    assert(says(": BAD 1 FROB ;\nBAD", "FROB ?\nBAD ?\n"), "BAD never existed")
+
+@test("a full dictionary is reported and HERE does not move")
+fault_dictionary_full()
+    start("".bytes)
+
+    val here = vm.here
+
+    evaluate(&vm, "1000000000 ALLOT".bytes)
+    assert(vm.error == E_DICTFULL, "dictionary full")
+    assert(vm.here == here, "HERE stayed")
+    assert(says("1000000000 ALLOT\n: X 1 ; X .", "dictionary full\n1 "), "reported, and the machine goes on")
+
+@test("a definition that does not fit is taken back out")
+fault_dictionary_full_while_compiling()
+    start("".bytes)
+
+    val room = vm.hi - vm.here
+    val n = isize(room) - 64
+
+    push(&vm, n)
+    evaluate(&vm, "ALLOT : LONG 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 ;".bytes)
+    assert(vm.error == E_DICTFULL, "dictionary full")
+    recover(&vm)
+    assert(find(&vm, "LONG".bytes) == 0, "LONG is gone")
+    evaluate(&vm, "-1000 ALLOT : SHORT 3 ; SHORT".bytes)
+    assert(vm.error == 0 && pop(&vm) == 3, "and the dictionary still works")
+
+@test("division by zero is reported by every dividing word")
+fault_division_by_zero()
+    assert(says("1 0 /", "division by zero\n"), "/")
+    assert(says("1 0 MOD", "division by zero\n"), "MOD")
+    assert(says("1 0 /MOD", "division by zero\n"), "/MOD")
+    assert(says("1 0 0 UM/MOD", "division by zero\n"), "UM/MOD")
+    assert(says("1 0 0 SM/REM", "division by zero\n"), "SM/REM")
+    assert(says("1 0 0 FM/MOD", "division by zero\n"), "FM/MOD")
+    assert(says("1 1 0 */", "division by zero\n"), "*/")
+
+@test("runaway recursion overflows the return stack and is reported")
+fault_return_stack()
+    assert(says(": R RECURSE ; R\n1 .", "return stack overflow\n1 "), "recursion")
+
+@test("pushing past the data stack's room overflows")
+fault_overflow()
+    assert(says(": P 1000 0 DO I LOOP ; P", "stack overflow\n"), "overflow")
+
+@test("QUIT keeps the data stack, ABORT empties it, ABORT\" shows its message")
+fault_quit_and_abort()
+    assert(says("1 2 QUIT 3\n. .", "2 1 "), "QUIT")
+    assert(says("1 2 ABORT\nDEPTH .", "0 "), "ABORT")
+    assert(says(": A ABORT\" no\" ; 0 A 5 . 1 A 6 .\nDEPTH .", "5 no0 "), "ABORT\"")
+
+@test("BYE ends the outer loop")
+fault_bye()
+    start("1 .\nBYE\n2 .".bytes)
+    assert(quit(&vm), "BYE was seen")
+    assert(written(&con) == "1 ".bytes, "nothing after it ran")
+
+// ---------------------------------------------------------------------------------------------------
+// Arithmetic choices the standard leaves open.
+
+@test("division is symmetric: quotients round toward zero")
+arith_symmetric()
+    assert(says("-7 2 / . -7 2 MOD . 7 -2 /MOD . .", "-3 -1 -3 1 "), "/ MOD /MOD")
+    assert(says("-7 S>D 2 FM/MOD . . -7 S>D 2 SM/REM . .", "-4 1 -3 -1 "), "both are offered")
+
+@test("pictured numeric output builds from the right")
+arith_pictured()
+    assert(says("-255 DUP ABS 0 <# #S ROT SIGN #> TYPE 255 HEX 0 <# # # #> TYPE", "-255FF"), "pictured")
+
+// ---------------------------------------------------------------------------------------------------
+// The Hayes Core tests.
+
+@test("John Hayes's Core tests all pass")
+hayes_core()
+    start(embed("../../../tests/tester.fr"))
+    quit(&vm)
+    also(embed("../../../tests/count.fs"))
+    also(embed("../../../tests/core.fr"))
+    evaluate(&vm, "#TESTS @ #ERRORS @".bytes)
+    assert(vm.error == 0, "the counters are there")
+
+    val failed = pop(&vm)
+    val tests = pop(&vm)
+
+    assert(tests == 638, "every test in core.fr ran")
+    assert(failed == 0, "none failed")

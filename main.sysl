@@ -1,0 +1,37 @@
+// forth: run Forth source from files, or from standard input.
+//
+//     forth file.fs ...     interpret each file in turn, then end
+//     forth < file.fs       interpret standard input to its end
+//
+// `BYE` ends the program at once. A fault is reported and interpretation goes on with the next line,
+// with the dictionary as it was.
+
+import sh.sysl.forth.{Vm, boot, quit}
+import sh.sysl.forth.host.{keyboard_console, script_console_of}
+import sysl.fs.read_bytes
+
+// The dictionary: 128K cells, a megabyte on a 64-bit machine.
+var region: [131072]usize
+var vm: Vm
+
+main(args: []string)
+    var con = keyboard_console()
+
+    boot(&vm, usize(&region[0]), region.len * sizeof(usize), &con)
+
+    if args.len < 2
+        quit(&vm)
+        return
+
+    for i in 1..<args.len
+        read_bytes(args[i]) match
+            Ok(text) ->
+                var file = script_console_of(text)
+
+                vm.con = &file
+
+                if quit(&vm) then return
+            Err(e) ->
+                flush()
+                print(s"forth: cannot read ${args[i]}: ${e}")
+                exit(1)

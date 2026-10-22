@@ -1,0 +1,59 @@
+module sh.sysl.forth
+@no_alloc
+
+// A console over text in memory: the source is a script, the keyboard is a second text, and what is
+// written goes into a buffer the caller owns. It is how the tests drive the machine, and it needs no
+// allocator, so a board can run a script it carries the same way.
+struct ScriptConsole
+    text: []const u8
+    at: usize
+    keys: []const u8
+    kat: usize
+    out: []u8
+    len: usize
+
+// A console reading `text` as its source and `keys` as its keyboard, writing into `out`. Output past
+// the end of `out` is counted in `len` and dropped.
+script_console(text: []const u8, keys: []const u8, out: []u8) -> ScriptConsole = ScriptConsole(text, 0, keys, 0, out, 0)
+
+// The next line of `s` from `at`, without its ending, into `into`; -1 at the end.
+next_line(s: []const u8, at: *usize, into: []u8) -> isize
+    if at[0] >= s.len then return -1
+
+    var i = at[0]
+    var n: usize = 0
+
+    while i < s.len && s[i] != 10
+        if n < into.len && s[i] != 13
+            into[n] = s[i]
+            n += 1
+
+        i += 1
+
+    at[0] = if i < s.len then i + 1 else i
+    isize(n)
+
+impl Console for ScriptConsole
+    emit(*self, c: u8)
+        if self.len < self.out.len then self.out[self.len] = c
+
+        self.len += 1
+
+    send(*self, s: []const u8)
+        for c in s
+            self.emit(c)
+
+    key(*self) -> isize
+        if self.kat >= self.keys.len then return -1
+
+        val c = self.keys[self.kat]
+
+        self.kat += 1
+        isize(c)
+
+    accept(*self, into: []u8) -> isize = next_line(self.keys, &self.kat, into)
+
+    refill(*self, into: []u8) -> isize = next_line(self.text, &self.at, into)
+
+// What has been written so far, as much of it as fit.
+written(c: *ScriptConsole) -> []const u8 = c.out[0..<(if c.len < c.out.len then c.len else c.out.len)]

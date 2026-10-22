@@ -1,0 +1,4 @@
+*.syslib
+*.o
+.sysl/
+/forth

@@ -1,0 +1,229 @@
+module sh.sysl.forth
+@no_alloc
+
+// The machine a Forth program runs on: two stacks, a dictionary, the interpreter's registers and the
+// console it talks through.
+//
+// **A cell is an `isize`**, as wide as an address, so `@` and `!` work on real machine addresses and a
+// Forth address is the number `usize(p)` gives. A double cell is two of them, low cell deeper on the
+// stack, and its arithmetic is done in 128 bits.
+//
+// **Nothing here allocates.** The dictionary is a region the caller hands over, and the stacks are
+// arrays inside the machine, so a program on a board with no heap declares one `Vm` and one region as
+// module storage and is done.
+
+// The console: everything the core says to the world and hears from it.
+//
+// `refill` is where the text interpreter's lines come from, and `accept` and `key` are the keyboard
+// that `ACCEPT` and `KEY` read. On a terminal they are the same stream; running a file, `refill`
+// reads the file while `accept` still reads the keyboard.
+trait Console
+    // One byte out.
+    emit(*self, c: u8)
+
+    // Several bytes out.
+    send(*self, s: []const u8)
+
+    // One byte in from the keyboard, or -1 when there is no more.
+    key(*self) -> isize
+
+    // One line from the keyboard into `into`, without its line ending, answering its length, or -1
+    // when the keyboard has ended. A line longer than `into` is cut to fit.
+    accept(*self, into: []u8) -> isize
+
+    // The next line of source text, as `accept` answers one.
+    refill(*self, into: []u8) -> isize
+
+// Every primitive has this signature, so that each can end by replacing its own frame with the next
+// one's: the machine, the instruction pointer, the data stack pointer and the top of the data stack.
+type Code = *extern(*Vm, *usize, *isize, isize) -> unit
+
+// The bytes in a cell.
+const CELL: usize = sizeof(isize)
+
+// Room on each stack, in cells. The data stack keeps a few cells below its bottom so that a word
+// reading past the bottom before it notices reads the machine's own storage.
+const DS_CELLS = 256
+const RS_CELLS = 256
+
+// Room for a line of input, a parsed word, a transient string and a pictured number.
+const LINE_BYTES: usize = 256
+const HOLD_BYTES: usize = 136
+
+// Header flags.
+const F_IMMEDIATE: u8 = 1
+const F_HIDDEN: u8 = 2
+
+// The codes `THROW` would use for these conditions in Forth 2012, so that the numbers mean what a
+// Forth programmer expects.
+const E_ABORT: isize = -1
+const E_ABORTQ: isize = -2
+const E_OVERFLOW: isize = -3
+const E_UNDERFLOW: isize = -4
+const E_RSOVERFLOW: isize = -5
+const E_RSUNDERFLOW: isize = -6
+const E_DICTFULL: isize = -8
+const E_DIVZERO: isize = -10
+const E_UNDEFINED: isize = -13
+const E_COMPILEONLY: isize = -14
+const E_ZERONAME: isize = -16
+const E_NAMELEN: isize = -19
+const E_CONTROL: isize = -22
+const E_QUIT: isize = -56
+// Not a `THROW` code: `BYE` asked the host to end the program.
+const E_BYE: isize = 1
+
+struct Vm
+    // The data stack pointer and top of stack, kept here while sysl code runs and in registers while
+    // a thread does.
+    sp: *isize
+    tos: isize
+
+    // The return stack pointer: the address of the top item.
+    rp: *isize
+
+    // The data stack's empty pointer and the furthest it may grow; the same for the return stack.
+    s0: *isize
+    slim: *isize
+    r0: *isize
+    rlim: *isize
+
+    // Nonzero once something has gone wrong, until the outer interpreter has reported it.
+    error: isize
+
+    // The variables Forth programs read and write by address: `STATE`, `BASE` and `>IN`.
+    state: isize
+    base: isize
+    to_in: isize
+
+    // The input source: its address, its length and `SOURCE-ID` (0 for the console, -1 for a string
+    // being evaluated).
+    src: usize
+    src_len: isize
+    src_id: isize
+
+    // The dictionary: the next free byte, and the region's bounds.
+    here: usize
+    lo: usize
+    hi: usize
+
+    // The newest header, the newest execution token, and the header of the definition being
+    // compiled (0 when none is).
+    latest: usize
+    latest_xt: usize
+    def_start: usize
+
+    // How deep the control-flow stack was when the current definition began, so that `;` can tell
+    // an unfinished `IF` from a finished one.
+    def_depth: isize
+
+    // Where the next pictured-number character goes, counting down through `hold`.
+    hld: usize
+
+    // Which of the two transient-string buffers `S"` fills next.
+    sidx: isize
+
+    // `COMPILE,`, which `POSTPONE` compiles a call to.
+    xt_compile: usize
+
+    con: *Console
+
+    // A three-cell thread that `EXECUTE` runs a word through.
+    xbuf: [3]usize
+
+    tib: [LINE_BYTES]u8
+    wbuf: [LINE_BYTES]u8
+    sbuf: [2][LINE_BYTES]u8
+    hold: [HOLD_BYTES]u8
+    pad: [LINE_BYTES]u8
+
+    // The name that was not found, for the message that says so.
+    missing: [32]u8
+    missing_len: usize
+
+    ds: [DS_CELLS]isize
+    rs: [RS_CELLS]isize
+end Vm
+
+// A Forth flag: all bits set for true.
+@inline
+flag(b: bool) -> isize = if b then -1 else 0
+
+// A Forth address as a pointer to a cell, and to a byte.
+@inline
+cell_at(a: usize) -> *isize = ptr_cast(a)
+
+@inline
+byte_at(a: usize) -> *u8 = ptr_cast(a)
+
+@inline
+aligned(a: usize) -> usize = (a + CELL - 1) & ~(CELL - 1)
+
+// How many items are on the data stack.
+@inline
+depth_of(vm: *Vm) -> isize = vm.sp - vm.s0
+
+// Record a fault. The first one sticks: a fault while unwinding from another is not the news.
+fail(vm: *Vm, code: isize)
+    if vm.error == 0 then vm.error = code
+
+// The slow path's stack: the same registers, read and written through the machine.
+//
+// `need` is asked before the pops it guards, so that a word missing an argument fails whole rather
+// than half-done.
+need(vm: *Vm, n: isize) -> bool
+    if depth_of(vm) >= n then return true
+
+    fail(vm, E_UNDERFLOW)
+    false
+
+room(vm: *Vm, n: isize) -> bool
+    if vm.slim - vm.sp >= n then return true
+
+    fail(vm, E_OVERFLOW)
+    false
+
+push(vm: *Vm, x: isize)
+    if !room(vm, 1) then return
+
+    vm.sp = &vm.sp[1]
+    vm.sp[0] = vm.tos
+    vm.tos = x
+
+// Pop with no check: the caller asked `need` first.
+pop(vm: *Vm) -> isize
+    val x = vm.tos
+
+    vm.tos = vm.sp[0]
+    vm.sp = &vm.sp[isize(-1)]
+    x
+
+// The bits in a cell, which is how far a double cell's high half is shifted.
+const BITS: usize = CELL * 8
+
+// Push a double cell, low cell first. Only the low two cells' worth of `d` is kept, so the 128 bits
+// are exact on a 64-bit machine and roomy on a 32-bit one.
+push_ud(vm: *Vm, d: u128)
+    push(vm, isize(d))
+    push(vm, isize(d >> BITS))
+
+push_d(vm: *Vm, d: i128) = push_ud(vm, u128(d))
+
+// Pop a double cell as unsigned, and as signed: the signed one extends the high cell's sign.
+pop_ud(vm: *Vm) -> u128
+    val hi = u128(usize(pop(vm)))
+    val lo = u128(usize(pop(vm)))
+
+    (hi << BITS) | lo
+
+pop_d(vm: *Vm) -> i128
+    val hi = i128(pop(vm))
+    val lo = i128(u128(usize(pop(vm))))
+
+    (hi << BITS) | lo
+
+// Empty both stacks.
+reset_stacks(vm: *Vm)
+    vm.sp = vm.s0
+    vm.tos = 0
+    vm.rp = vm.r0

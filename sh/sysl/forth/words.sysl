@@ -1,0 +1,779 @@
+module sh.sysl.forth
+@no_alloc
+
+// The words written in sysl: the compiler, the parser, the defining words, double-cell arithmetic and
+// output. None is on a hot path, so each works on the machine's saved registers through `push` and
+// `pop` instead of being a primitive.
+
+// ---------------------------------------------------------------------------------------------------
+// Defining words.
+
+w_colon(vm: *Vm)
+    val start = aligned(vm.here)
+
+    if !header(vm, parse_name(vm), &docol) then return
+
+    set_flag(vm.latest, F_HIDDEN)
+    vm.def_start = start
+    vm.def_depth = depth_of(vm)
+    vm.state = -1
+
+w_semicolon(vm: *Vm)
+    if vm.def_start == 0
+        fail(vm, E_COMPILEONLY)
+        return
+
+    if depth_of(vm) != vm.def_depth
+        fail(vm, E_CONTROL)
+        return
+
+    compile_code(vm, &p_exit)
+    clear_flag(vm.latest, F_HIDDEN)
+    vm.def_start = 0
+    vm.state = 0
+
+w_create(vm: *Vm)
+    header(vm, parse_name(vm), &dovar)
+
+w_variable(vm: *Vm)
+    if header(vm, parse_name(vm), &dovar) then comma(vm, 0)
+
+w_constant(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val x = pop(vm)
+
+    if header(vm, parse_name(vm), &doconst) then comma(vm, x)
+
+w_does(vm: *Vm) = compile_code(vm, &p_does)
+
+w_immediate(vm: *Vm) = immediate(vm)
+
+w_lbracket(vm: *Vm)
+    vm.state = 0
+
+w_rbracket(vm: *Vm)
+    vm.state = -1
+
+// The token of the next name in the input, or a fault naming it.
+parse_xt(vm: *Vm) -> usize
+    val name = parse_name(vm)
+
+    if name.len == 0
+        fail(vm, E_ZERONAME)
+        return 0
+
+    val h = find(vm, name)
+
+    if h == 0
+        val n = if name.len > vm.missing.len then vm.missing.len else name.len
+
+        for i in 0..<n
+            vm.missing[i] = name[i]
+
+        vm.missing_len = n
+        fail(vm, E_UNDEFINED)
+        return 0
+
+    xt_of(h)
+
+w_tick(vm: *Vm)
+    val xt = parse_xt(vm)
+
+    if vm.error == 0 then push(vm, isize(xt))
+
+compile_literal(vm: *Vm, x: isize)
+    compile_code(vm, &p_lit)
+    comma(vm, x)
+
+w_bracket_tick(vm: *Vm)
+    val xt = parse_xt(vm)
+
+    if vm.error == 0 then compile_literal(vm, isize(xt))
+
+w_literal(vm: *Vm)
+    if need(vm, 1) then compile_literal(vm, pop(vm))
+
+w_compile_comma(vm: *Vm)
+    if need(vm, 1) then compile_xt(vm, usize(pop(vm)))
+
+// An immediate word is compiled; any other gets code compiled that will compile it.
+w_postpone(vm: *Vm)
+    val name = parse_name(vm)
+    val h = find(vm, name)
+
+    if h == 0
+        fail(vm, E_UNDEFINED)
+        return
+
+    if flags_of(h) & F_IMMEDIATE != 0
+        compile_xt(vm, xt_of(h))
+    else
+        compile_literal(vm, isize(xt_of(h)))
+        compile_xt(vm, vm.xt_compile)
+
+w_recurse(vm: *Vm) = compile_xt(vm, vm.latest_xt)
+
+w_tobody(vm: *Vm)
+    if need(vm, 1) then push(vm, pop(vm) + isize(2 * CELL))
+
+// ---------------------------------------------------------------------------------------------------
+// Control structures. The control-flow stack is the data stack: an `orig` is the address of a branch
+// cell waiting for its target, a `dest` the address a backward branch goes to.
+
+// A forward branch whose target is filled in later; answers the cell to fill.
+forward(vm: *Vm, code: Code) -> isize
+    compile_code(vm, code)
+
+    val at = vm.here
+
+    comma(vm, 0)
+    isize(at)
+
+resolve(vm: *Vm, orig: isize)
+    cell_at(usize(orig))[0] = isize(vm.here)
+
+w_if(vm: *Vm) = push(vm, forward(vm, &p_0branch))
+
+w_else(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val orig = pop(vm)
+
+    push(vm, forward(vm, &p_branch))
+    resolve(vm, orig)
+
+w_then(vm: *Vm)
+    if need(vm, 1) then resolve(vm, pop(vm))
+
+w_begin(vm: *Vm) = push(vm, isize(vm.here))
+
+w_until(vm: *Vm)
+    if !need(vm, 1) then return
+
+    compile_code(vm, &p_0branch)
+    comma(vm, pop(vm))
+
+w_again(vm: *Vm)
+    if !need(vm, 1) then return
+
+    compile_code(vm, &p_branch)
+    comma(vm, pop(vm))
+
+w_while(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val dest = pop(vm)
+
+    push(vm, forward(vm, &p_0branch))
+    push(vm, dest)
+
+w_repeat(vm: *Vm)
+    if !need(vm, 2) then return
+
+    compile_code(vm, &p_branch)
+    comma(vm, pop(vm))
+    resolve(vm, pop(vm))
+
+// `DO` leaves the cell its run-time half reads `LEAVE`'s target from, then the loop's start.
+w_do(vm: *Vm)
+    push(vm, forward(vm, &p_do))
+    push(vm, isize(vm.here))
+
+w_qdo(vm: *Vm)
+    push(vm, forward(vm, &p_qdo))
+    push(vm, isize(vm.here))
+
+close_loop(vm: *Vm, code: Code)
+    if !need(vm, 2) then return
+
+    compile_code(vm, code)
+    comma(vm, pop(vm))
+    resolve(vm, pop(vm))
+
+w_loop(vm: *Vm) = close_loop(vm, &p_loop)
+
+w_ploop(vm: *Vm) = close_loop(vm, &p_ploop)
+
+// ---------------------------------------------------------------------------------------------------
+// Strings and comments in the source.
+
+// The next string up to a quote, compiled inline after `code`, or — interpreting `S"` — copied to a
+// transient buffer. There are two, used in turn, so that two strings can be in hand at once.
+w_squote(vm: *Vm)
+    val s = parse(vm, u8('"'))
+
+    if vm.state != 0
+        compile_code(vm, &p_slit)
+        compile_string(vm, s)
+        return
+
+    val which = usize(vm.sidx)
+    val n = if s.len > LINE_BYTES then LINE_BYTES else s.len
+
+    vm.sidx = 1 - vm.sidx
+
+    for i in 0..<n
+        vm.sbuf[which][i] = s[i]
+
+    push(vm, isize(usize(&vm.sbuf[which][0])))
+    push(vm, isize(n))
+
+w_dotquote(vm: *Vm)
+    val s = parse(vm, u8('"'))
+
+    if vm.state == 0
+        vm.con.send(s)
+        return
+
+    compile_code(vm, &p_dotq)
+    compile_string(vm, s)
+
+w_abortquote(vm: *Vm)
+    compile_code(vm, &p_abortq)
+    compile_string(vm, parse(vm, u8('"')))
+
+w_dotparen(vm: *Vm) = vm.con.send(parse(vm, u8(')')))
+
+w_paren(vm: *Vm)
+    parse(vm, u8(')'))
+
+w_backslash(vm: *Vm)
+    vm.to_in = vm.src_len
+
+w_char(vm: *Vm)
+    val name = parse_name(vm)
+
+    if name.len == 0
+        fail(vm, E_ZERONAME)
+        return
+
+    push(vm, isize(name[0]))
+
+w_bracket_char(vm: *Vm)
+    val name = parse_name(vm)
+
+    if name.len == 0
+        fail(vm, E_ZERONAME)
+        return
+
+    compile_literal(vm, isize(name[0]))
+
+// ---------------------------------------------------------------------------------------------------
+// The parser and interpreter, as words.
+
+// `WORD`: skip leading delimiters, then the text up to the next one, as a counted string in a buffer
+// of the machine's own. A space as the delimiter means any white space.
+w_word(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val delim = u8(pop(vm))
+    val s = source_bytes(vm)
+    var i = usize(vm.to_in)
+
+    while i < s.len && (s[i] == delim || (delim == 32 && s[i] < 32))
+        i += 1
+
+    val start = i
+
+    while i < s.len && s[i] != delim && !(delim == 32 && s[i] < 32)
+        i += 1
+
+    val n = if i - start > LINE_BYTES - 2 then LINE_BYTES - 2 else i - start
+
+    vm.to_in = isize(if i < s.len then i + 1 else i)
+    vm.wbuf[0] = u8(n)
+
+    for k in 0..<n
+        vm.wbuf[k + 1] = s[start + k]
+
+    vm.wbuf[n + 1] = 32
+    push(vm, isize(usize(&vm.wbuf[0])))
+
+// A parsed string as an address and a length. An empty one has no first byte to take the address
+// of, so it is answered as the place in the source where parsing stopped.
+push_text(vm: *Vm, s: []const u8)
+    push(vm, isize(if s.len == 0 then vm.src + usize(vm.to_in) else usize(&s[0])))
+    push(vm, isize(s.len))
+
+w_parse(vm: *Vm)
+    if need(vm, 1) then push_text(vm, parse(vm, u8(pop(vm))))
+
+w_parse_name(vm: *Vm) = push_text(vm, parse_name(vm))
+
+// `FIND`: a counted string's word, as its token and 1 for an immediate one or -1 for any other; the
+// string and 0 when there is none.
+w_find(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val at = usize(pop(vm))
+    val name = byte_at(at + 1)[0..<usize(byte_at(at)[0])]
+    val h = find(vm, name)
+
+    if h == 0
+        push(vm, isize(at))
+        push(vm, 0)
+        return
+
+    push(vm, isize(xt_of(h)))
+    push(vm, if flags_of(h) & F_IMMEDIATE != 0 then 1 else -1)
+
+w_evaluate(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val len = pop(vm)
+    val addr = usize(pop(vm))
+
+    evaluate_at(vm, addr, len)
+
+w_source(vm: *Vm)
+    push(vm, isize(vm.src))
+    push(vm, vm.src_len)
+
+w_source_id(vm: *Vm) = push(vm, vm.src_id)
+
+w_refill(vm: *Vm)
+    if vm.src_id != 0
+        push(vm, 0)
+        return
+
+    push(vm, flag(refill_console(vm)))
+
+w_to_in(vm: *Vm) = push(vm, isize(usize(&vm.to_in)))
+
+w_state(vm: *Vm) = push(vm, isize(usize(&vm.state)))
+
+w_base(vm: *Vm) = push(vm, isize(usize(&vm.base)))
+
+w_decimal(vm: *Vm)
+    vm.base = 10
+
+w_hex(vm: *Vm)
+    vm.base = 16
+
+// `>NUMBER` ( ud addr len -- ud' addr' len' ).
+w_to_number(vm: *Vm)
+    if !need(vm, 4) then return
+
+    val len = usize(pop(vm))
+    val addr = usize(pop(vm))
+    val ud = pop_ud(vm)
+    val (n, used) = convert(ud, byte_at(addr)[0..<len], vm.base)
+
+    push_ud(vm, n)
+    push(vm, isize(addr + used))
+    push(vm, isize(len - used))
+
+// ---------------------------------------------------------------------------------------------------
+// The dictionary and memory, as words.
+
+w_here(vm: *Vm) = push(vm, isize(vm.here))
+
+w_allot(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val n = pop(vm)
+
+    if n >= 0
+        if reserve(vm, usize(n)) then vm.here += usize(n)
+    else if vm.here - vm.lo >= usize(0 - n)
+        vm.here -= usize(0 - n)
+    else
+        fail(vm, E_DICTFULL)
+
+w_comma(vm: *Vm)
+    if need(vm, 1) then comma(vm, pop(vm))
+
+w_ccomma(vm: *Vm)
+    if need(vm, 1) then ccomma(vm, u8(pop(vm)))
+
+w_align(vm: *Vm) = align_here(vm)
+
+w_aligned(vm: *Vm)
+    if need(vm, 1) then push(vm, isize(aligned(usize(pop(vm)))))
+
+w_cells(vm: *Vm)
+    if need(vm, 1) then push(vm, pop(vm) * isize(CELL))
+
+w_cellplus(vm: *Vm)
+    if need(vm, 1) then push(vm, pop(vm) + isize(CELL))
+
+// A character is a byte, so `CHARS` changes nothing.
+w_chars(vm: *Vm)
+    need(vm, 1)
+
+w_count(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val at = usize(pop(vm))
+
+    push(vm, isize(at + 1))
+    push(vm, isize(byte_at(at)[0]))
+
+w_2fetch(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val at = usize(pop(vm))
+
+    push(vm, cell_at(at + CELL)[0])
+    push(vm, cell_at(at)[0])
+
+w_2store(vm: *Vm)
+    if !need(vm, 3) then return
+
+    val at = usize(pop(vm))
+
+    cell_at(at)[0] = pop(vm)
+    cell_at(at + CELL)[0] = pop(vm)
+
+w_fill(vm: *Vm)
+    if !need(vm, 3) then return
+
+    val c = u8(pop(vm))
+    val n = pop(vm)
+    val at = usize(pop(vm))
+
+    if n <= 0 then return
+
+    val p = byte_at(at)
+
+    for i in 0..<usize(n)
+        p[i] = c
+
+// `MOVE` copies as if through a buffer, so overlapping regions come out right in either direction.
+w_move(vm: *Vm)
+    if !need(vm, 3) then return
+
+    val n = pop(vm)
+    val to = byte_at(usize(pop(vm)))
+    val from = byte_at(usize(pop(vm)))
+
+    if n <= 0 then return
+
+    val count = usize(n)
+
+    if usize(to) < usize(from)
+        for i in 0..<count
+            to[i] = from[i]
+    else
+        var i = count
+
+        while i > 0
+            i -= 1
+            to[i] = from[i]
+
+// ---------------------------------------------------------------------------------------------------
+// The stack, as words.
+
+w_depth(vm: *Vm) = push(vm, depth_of(vm))
+
+// `PICK` ( xu ... x0 u -- xu ... x0 xu ).
+w_pick(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val u = pop(vm)
+
+    if u < 0 || !need(vm, u + 1) then return
+
+    push(vm, if u == 0 then vm.tos else vm.sp[0 - (u - 1)])
+
+// `ROLL` ( xu xu-1 ... x0 u -- xu-1 ... x0 xu ).
+w_roll(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val u = pop(vm)
+
+    if u <= 0
+        if u < 0 then fail(vm, E_UNDERFLOW)
+        return
+
+    if !need(vm, u + 1) then return
+
+    // The items below the top, as an array whose last element is the second item.
+    val x = vm.sp[0 - (u - 1)]
+    var k = 0 - (u - 1)
+
+    while k < 0
+        vm.sp[k] = vm.sp[k + 1]
+        k += 1
+
+    vm.sp[0] = vm.tos
+    vm.tos = x
+
+w_abort(vm: *Vm) = fail(vm, E_ABORT)
+
+w_quit(vm: *Vm) = fail(vm, E_QUIT)
+
+w_bye(vm: *Vm) = fail(vm, E_BYE)
+
+// ---------------------------------------------------------------------------------------------------
+// Double-cell arithmetic.
+
+w_s_to_d(vm: *Vm)
+    if need(vm, 1) then push_d(vm, i128(pop(vm)))
+
+w_mstar(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val b = i128(pop(vm))
+    val a = i128(pop(vm))
+
+    push_d(vm, a * b)
+
+w_umstar(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val b = u128(usize(pop(vm)))
+    val a = u128(usize(pop(vm)))
+
+    push_ud(vm, a * b)
+
+// `UM/MOD` ( ud u -- rem quot ).
+w_um_slash_mod(vm: *Vm)
+    if !need(vm, 3) then return
+
+    val u = u128(usize(pop(vm)))
+    val ud = pop_ud(vm)
+
+    if u == 0
+        fail(vm, E_DIVZERO)
+        return
+
+    push(vm, isize(ud % u))
+    push(vm, isize(ud / u))
+
+// Symmetric division of a double by a single: the quotient rounds toward zero.
+sym_divide(vm: *Vm, d: i128, n: i128)
+    if n == 0
+        fail(vm, E_DIVZERO)
+        return
+
+    if n == -1
+        push(vm, 0)
+        push(vm, isize(0 - d))
+        return
+
+    push(vm, isize(d % n))
+    push(vm, isize(d / n))
+
+// Floored division: the quotient rounds toward negative infinity, and the remainder takes the
+// divisor's sign.
+floor_divide(vm: *Vm, d: i128, n: i128)
+    if n == 0
+        fail(vm, E_DIVZERO)
+        return
+
+    if n == -1
+        push(vm, 0)
+        push(vm, isize(0 - d))
+        return
+
+    var q = d / n
+    var r = d % n
+
+    if r != 0 && (r < 0) != (n < 0)
+        q -= 1
+        r += n
+
+    push(vm, isize(r))
+    push(vm, isize(q))
+
+w_sm_slash_rem(vm: *Vm)
+    if !need(vm, 3) then return
+
+    val n = i128(pop(vm))
+
+    sym_divide(vm, pop_d(vm), n)
+
+w_fm_slash_mod(vm: *Vm)
+    if !need(vm, 3) then return
+
+    val n = i128(pop(vm))
+
+    floor_divide(vm, pop_d(vm), n)
+
+// `*/MOD` ( a b c -- rem quot ), the product held in a double so it cannot overflow.
+w_star_slash_mod(vm: *Vm)
+    if !need(vm, 3) then return
+
+    val c = i128(pop(vm))
+    val b = i128(pop(vm))
+    val a = i128(pop(vm))
+
+    sym_divide(vm, a * b, c)
+
+w_star_slash(vm: *Vm)
+    w_star_slash_mod(vm)
+
+    if vm.error != 0 then return
+
+    val q = pop(vm)
+
+    pop(vm)
+    push(vm, q)
+
+// ---------------------------------------------------------------------------------------------------
+// Output.
+
+w_emit(vm: *Vm)
+    if need(vm, 1) then vm.con.emit(u8(pop(vm)))
+
+w_type(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val n = pop(vm)
+    val at = usize(pop(vm))
+
+    if n > 0 then vm.con.send(byte_at(at)[0..<usize(n)])
+
+w_cr(vm: *Vm) = vm.con.emit(10)
+
+w_space(vm: *Vm) = vm.con.emit(32)
+
+w_spaces(vm: *Vm)
+    if !need(vm, 1) then return
+
+    var n = pop(vm)
+
+    while n > 0
+        vm.con.emit(32)
+        n -= 1
+
+// Pictured numeric output builds its digits from the right, down through `hold`.
+hold_end(vm: *Vm) -> usize = usize(&vm.hold[0]) + HOLD_BYTES
+
+hold_char(vm: *Vm, c: u8)
+    if vm.hld <= usize(&vm.hold[0])
+        fail(vm, E_OVERFLOW)
+        return
+
+    vm.hld -= 1
+    byte_at(vm.hld)[0] = c
+
+digit_char(d: usize) -> u8 = if d < 10 then u8('0') + u8(d) else u8('A') + u8(d - 10)
+
+// One digit of `ud` into the picture; answers what is left of it.
+sharp(vm: *Vm, ud: u128) -> u128
+    if vm.base < 2 || vm.base > 36
+        fail(vm, E_DIVZERO)
+        return 0
+
+    val base = u128(usize(vm.base))
+
+    hold_char(vm, digit_char(usize(ud % base)))
+    ud / base
+
+w_lesssharp(vm: *Vm)
+    vm.hld = hold_end(vm)
+
+w_sharp(vm: *Vm)
+    if need(vm, 2) then push_ud(vm, sharp(vm, pop_ud(vm)))
+
+w_sharps(vm: *Vm)
+    if !need(vm, 2) then return
+
+    var ud = sharp(vm, pop_ud(vm))
+
+    while ud != 0 && vm.error == 0
+        ud = sharp(vm, ud)
+
+    push_ud(vm, ud)
+
+w_sharpgreater(vm: *Vm)
+    if !need(vm, 2) then return
+
+    pop(vm)
+    pop(vm)
+    push(vm, isize(vm.hld))
+    push(vm, isize(hold_end(vm) - vm.hld))
+
+w_hold(vm: *Vm)
+    if need(vm, 1) then hold_char(vm, u8(pop(vm)))
+
+w_sign(vm: *Vm)
+    if need(vm, 1) && pop(vm) < 0 then hold_char(vm, u8('-'))
+
+// A number in the current base and a space, as `.` and `U.` show it.
+show(vm: *Vm, magnitude: u128, negative: bool)
+    vm.hld = hold_end(vm)
+
+    var ud = sharp(vm, magnitude)
+
+    while ud != 0 && vm.error == 0
+        ud = sharp(vm, ud)
+
+    if negative then hold_char(vm, u8('-'))
+
+    if vm.error != 0 then return
+
+    vm.con.send(byte_at(vm.hld)[0..<hold_end(vm) - vm.hld])
+    vm.con.emit(32)
+
+w_dot(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val n = pop(vm)
+    val magnitude = if n < 0 then u128(usize(0 - n)) else u128(usize(n))
+
+    show(vm, magnitude, n < 0)
+
+w_udot(vm: *Vm)
+    if need(vm, 1) then show(vm, u128(usize(pop(vm))), false)
+
+// `.S`: the stack, deepest first, without changing it.
+w_dots(vm: *Vm)
+    val d = depth_of(vm)
+
+    vm.con.send("<".bytes)
+
+    val saved = vm.base
+
+    show(vm, u128(usize(d)), false)
+    vm.con.send("> ".bytes)
+
+    for k in 1..<d + 1
+        val x = if k == d then vm.tos else vm.s0[k + 1]
+
+        show(vm, if x < 0 then u128(usize(0 - x)) else u128(usize(x)), x < 0)
+
+    vm.base = saved
+
+// ---------------------------------------------------------------------------------------------------
+// Input.
+
+w_key(vm: *Vm) = push(vm, vm.con.key())
+
+// `ACCEPT` ( addr n -- n' ): a line from the keyboard. The end of the keyboard is an empty line.
+w_accept(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val n = pop(vm)
+    val at = usize(pop(vm))
+
+    if n <= 0
+        push(vm, 0)
+        return
+
+    val got = vm.con.accept(byte_at(at)[0..<usize(n)])
+
+    push(vm, if got < 0 then 0 else got)
+
+w_environmentq(vm: *Vm)
+    if !need(vm, 2) then return
+
+    pop(vm)
+    pop(vm)
+    push(vm, 0)
+
+// `WORDS`: every visible name, newest first.
+w_words(vm: *Vm)
+    var h = vm.latest
+
+    while h != 0
+        if flags_of(h) & F_HIDDEN == 0
+            vm.con.send(name_of(h))
+            vm.con.emit(32)
+
+        h = link_of(h)
+
+    vm.con.emit(10)

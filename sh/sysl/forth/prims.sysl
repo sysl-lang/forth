@@ -1,0 +1,645 @@
+module sh.sysl.forth
+@no_alloc
+
+// The inner interpreter: direct threading through guaranteed tail calls.
+//
+// **A thread is a run of cells, and each cell is the address of a primitive.** A primitive does its
+// work and then performs `NEXT` — it loads the next cell, steps the instruction pointer over it, and
+// `become`s that function. `become` replaces the frame rather than adding one, so a thread of any
+// length runs in one frame and the hot path holds no call and no return: on AArch64 `NEXT` is
+// `ldr x4, [x1], #8` and `br x4`.
+//
+// **The registers are the arguments.** The instruction pointer, the data stack pointer and the top of
+// the data stack travel as parameters, so they sit in machine registers across the whole thread; the
+// return stack, which is touched far less often, lives in the machine.
+//
+// **A word that is not a primitive is compiled as two cells**: the address of its code — `docol` for
+// a colon definition, `dovar`, `doconst`, `dodoes` or `doslow` — and its execution token, which that
+// code reads as an operand. Its code knows from the token where the body is. A primitive needs
+// nothing beyond its own cell.
+//
+// **A fault stops the thread by returning instead of jumping.** Since every frame between the
+// caller and the faulting primitive has been replaced, that return lands in `run`, which handed the
+// first cell control; the fault is in `vm.error` by then.
+
+// `NEXT`: jump to the primitive whose address is at `ip`, with `ip` stepped past it. Every primitive
+// ends by `become`-ing this, and since it is inlined the jump is the primitive's own.
+@inline
+next(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    val f: Code = ptr_cast(ip[0])
+
+    become f(vm, &ip[1], sp, tos)
+
+// The address held in a cell, as a thread.
+@inline
+thread_at(a: usize) -> *usize = ptr_cast(a)
+
+// Record a fault from inside a thread: put the registers back where sysl code reads them, and stop.
+fault(vm: *Vm, sp: *isize, tos: isize, code: isize)
+    vm.sp = sp
+    vm.tos = tos
+    fail(vm, code)
+
+// The faults a primitive can meet, each with a primitive's signature so that the check guarding it
+// is one line ending in `become`.
+underflow(vm: *Vm, ip: *usize, sp: *isize, tos: isize) = fault(vm, sp, tos, E_UNDERFLOW)
+
+overflow(vm: *Vm, ip: *usize, sp: *isize, tos: isize) = fault(vm, sp, tos, E_OVERFLOW)
+
+rs_overflow(vm: *Vm, ip: *usize, sp: *isize, tos: isize) = fault(vm, sp, tos, E_RSOVERFLOW)
+
+rs_underflow(vm: *Vm, ip: *usize, sp: *isize, tos: isize) = fault(vm, sp, tos, E_RSUNDERFLOW)
+
+divide_by_zero(vm: *Vm, ip: *usize, sp: *isize, tos: isize) = fault(vm, sp, tos, E_DIVZERO)
+
+aborted(vm: *Vm, ip: *usize, sp: *isize, tos: isize) = fault(vm, sp, tos, E_ABORTQ)
+
+// Start a thread at `ip`, and come back when it halts or faults.
+run(vm: *Vm, ip: *usize)
+    val f: Code = ptr_cast(ip[0])
+
+    f(vm, &ip[1], vm.sp, vm.tos)
+
+// The cell that ends a thread `run` started: keep the registers and return.
+p_halt(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    vm.sp = sp
+    vm.tos = tos
+
+// Whether a word's code reads an operand from the thread — whether a reference to it is compiled as
+// two cells rather than one.
+takes_operand(c: Code) -> bool = c == &docol || c == &dovar || c == &doconst || c == &dodoes || c == &doslow
+
+// ---------------------------------------------------------------------------------------------------
+// The code of a word that is not a primitive. Each finds the word's token in the cell after its own.
+
+// A colon definition: save where to come back to and run the body.
+docol(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    val rp = &vm.rp[1]
+
+    if vm.rlim - rp <= 0 then become rs_overflow(vm, ip, sp, tos)
+
+    rp[0] = isize(usize(&ip[1]))
+    vm.rp = rp
+
+    become next(vm, thread_at(ip[0] + 2 * CELL), sp, tos)
+
+// A word made by `CREATE` or `VARIABLE`: its body's address.
+dovar(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if vm.slim - sp <= 0 then become overflow(vm, ip, sp, tos)
+
+    sp[1] = tos
+
+    become next(vm, &ip[1], &sp[1], isize(ip[0] + 2 * CELL))
+
+// A word made by `CONSTANT`: the cell in its body.
+doconst(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if vm.slim - sp <= 0 then become overflow(vm, ip, sp, tos)
+
+    sp[1] = tos
+
+    become next(vm, &ip[1], &sp[1], cell_at(ip[0] + 2 * CELL)[0])
+
+// A word whose defining word used `DOES>`: its body's address, then the thread after the `DOES>`.
+dodoes(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if vm.slim - sp <= 0 then become overflow(vm, ip, sp, tos)
+
+    val rp = &vm.rp[1]
+
+    if vm.rlim - rp <= 0 then become rs_overflow(vm, ip, sp, tos)
+
+    rp[0] = isize(usize(&ip[1]))
+    vm.rp = rp
+    sp[1] = tos
+
+    become next(vm, thread_at(usize(cell_at(ip[0] + CELL)[0])), &sp[1], isize(ip[0] + 2 * CELL))
+
+// A word written in sysl rather than as a primitive: the parser, the compiler, output, anything that
+// is not on a hot path. Its body holds the function, which works on the machine's saved registers.
+doslow(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    vm.sp = sp
+    vm.tos = tos
+
+    val word: *extern(*Vm) -> unit = ptr_cast(usize(cell_at(ip[0] + 2 * CELL)[0]))
+
+    word(vm)
+
+    if vm.error != 0 then return
+
+    become next(vm, &ip[1], vm.sp, vm.tos)
+
+// ---------------------------------------------------------------------------------------------------
+// Threads, branches and loops.
+
+p_exit(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    val rp = vm.rp
+
+    if rp - vm.r0 <= 0 then become rs_underflow(vm, ip, sp, tos)
+
+    vm.rp = &rp[isize(-1)]
+
+    become next(vm, thread_at(usize(rp[0])), sp, tos)
+
+// `EXECUTE`. A primitive is jumped to with the caller's thread still current, so it carries on there.
+// Any other word is run through `xbuf`, a three-cell thread of its code, its token and `EXIT`.
+p_execute(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    val xt = usize(tos)
+    val code: Code = ptr_cast(usize(cell_at(xt)[0]))
+
+    if !takes_operand(code) then become code(vm, ip, &sp[isize(-1)], sp[0])
+
+    val rp = &vm.rp[1]
+
+    if vm.rlim - rp <= 0 then become rs_overflow(vm, ip, sp, tos)
+
+    rp[0] = isize(usize(ip))
+    vm.rp = rp
+    vm.xbuf[0] = usize(code)
+    vm.xbuf[1] = xt
+    vm.xbuf[2] = usize(&p_exit)
+
+    become next(vm, &vm.xbuf[0], &sp[isize(-1)], sp[0])
+
+// A literal: the cell after this one.
+p_lit(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if vm.slim - sp <= 0 then become overflow(vm, ip, sp, tos)
+
+    sp[1] = tos
+
+    become next(vm, &ip[1], &sp[1], isize(ip[0]))
+
+p_branch(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    become next(vm, thread_at(ip[0]), sp, tos)
+
+p_0branch(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, if tos == 0 then thread_at(ip[0]) else &ip[1], &sp[isize(-1)], sp[0])
+
+// `DO`'s run-time half. The operand is where `LEAVE` goes. The return stack takes three cells: that
+// address, the limit and the index, the index on top.
+p_do(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    val rp = vm.rp
+
+    if vm.rlim - rp < 4 then become rs_overflow(vm, ip, sp, tos)
+
+    rp[1] = isize(ip[0])
+    rp[2] = sp[0]
+    rp[3] = tos
+    vm.rp = &rp[3]
+
+    become next(vm, &ip[1], &sp[isize(-2)], sp[isize(-1)])
+
+// `?DO`: the same, except that a loop whose index starts at its limit is skipped.
+p_qdo(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    if sp[0] == tos then become next(vm, thread_at(ip[0]), &sp[isize(-2)], sp[isize(-1)])
+
+    become p_do(vm, ip, sp, tos)
+
+// `LOOP`: step the index, and go back to the operand until it reaches the limit.
+p_loop(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    val rp = vm.rp
+    val index = rp[0] + 1
+
+    if index == rp[isize(-1)]
+        vm.rp = &rp[isize(-3)]
+
+        become next(vm, &ip[1], sp, tos)
+
+    rp[0] = index
+
+    become next(vm, thread_at(ip[0]), sp, tos)
+
+// `+LOOP`: the loop ends when the step carries the index across the boundary between the limit
+// minus one and the limit, in either direction. Measured from the limit, that is the offset's sign
+// changing while the step's sign differs from the old offset's.
+p_ploop(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    val rp = vm.rp
+    val step = tos
+    val was = rp[0] - rp[isize(-1)]
+    val now = was + step
+
+    if (was ^ now) & (was ^ step) < 0
+        vm.rp = &rp[isize(-3)]
+
+        become next(vm, &ip[1], &sp[isize(-1)], sp[0])
+
+    rp[0] = rp[0] + step
+
+    become next(vm, thread_at(ip[0]), &sp[isize(-1)], sp[0])
+
+p_i(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if vm.slim - sp <= 0 then become overflow(vm, ip, sp, tos)
+
+    sp[1] = tos
+
+    become next(vm, ip, &sp[1], vm.rp[0])
+
+p_j(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if vm.slim - sp <= 0 then become overflow(vm, ip, sp, tos)
+
+    sp[1] = tos
+
+    become next(vm, ip, &sp[1], vm.rp[isize(-3)])
+
+p_leave(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    val rp = vm.rp
+
+    vm.rp = &rp[isize(-3)]
+
+    become next(vm, thread_at(usize(rp[isize(-2)])), sp, tos)
+
+p_unloop(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    vm.rp = &vm.rp[isize(-3)]
+
+    become next(vm, ip, sp, tos)
+
+// An inline string: its length, then its bytes, padded to a cell. Answers its address and length.
+p_slit(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if vm.slim - sp < 2 then become overflow(vm, ip, sp, tos)
+
+    val len = ip[0]
+    val at = usize(&ip[1])
+
+    sp[1] = tos
+    sp[2] = isize(at)
+
+    become next(vm, thread_at(aligned(at + len)), &sp[2], isize(len))
+
+// `."`'s run-time half: the same inline string, sent to the console.
+p_dotq(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    val len = ip[0]
+    val at = usize(&ip[1])
+
+    vm.con.send(byte_at(at)[0..<len])
+
+    become next(vm, thread_at(aligned(at + len)), sp, tos)
+
+// `ABORT"`'s run-time half: given a true flag, show the inline string and abort.
+p_abortq(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    val len = ip[0]
+    val at = usize(&ip[1])
+
+    if tos != 0
+        vm.con.send(byte_at(at)[0..<len])
+
+        become aborted(vm, ip, &sp[isize(-1)], sp[0])
+
+    become next(vm, thread_at(aligned(at + len)), &sp[isize(-1)], sp[0])
+
+// `DOES>`'s run-time half, run by the defining word: point the newest word at the thread that follows
+// this cell, and return from the defining word.
+p_does(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    val xt = vm.latest_xt
+
+    cell_at(xt)[0] = isize(usize(&dodoes))
+    cell_at(xt + CELL)[0] = isize(usize(ip))
+
+    become p_exit(vm, ip, sp, tos)
+
+// ---------------------------------------------------------------------------------------------------
+// The data and return stacks.
+
+p_dup(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+    if vm.slim - sp <= 0 then become overflow(vm, ip, sp, tos)
+
+    sp[1] = tos
+
+    become next(vm, ip, &sp[1], tos)
+
+p_qdup(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if tos != 0 then become p_dup(vm, ip, sp, tos)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, sp, tos)
+
+p_drop(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], sp[0])
+
+p_swap(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    val second = sp[0]
+
+    sp[0] = tos
+
+    become next(vm, ip, sp, second)
+
+p_over(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+    if vm.slim - sp <= 0 then become overflow(vm, ip, sp, tos)
+
+    sp[1] = tos
+
+    become next(vm, ip, &sp[1], sp[0])
+
+p_rot(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 3 then become underflow(vm, ip, sp, tos)
+
+    val a = sp[isize(-1)]
+
+    sp[isize(-1)] = sp[0]
+    sp[0] = tos
+
+    become next(vm, ip, sp, a)
+
+p_nip(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], tos)
+
+p_tuck(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+    if vm.slim - sp <= 0 then become overflow(vm, ip, sp, tos)
+
+    sp[1] = sp[0]
+    sp[0] = tos
+
+    become next(vm, ip, &sp[1], tos)
+
+p_2dup(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+    if vm.slim - sp < 2 then become overflow(vm, ip, sp, tos)
+
+    sp[1] = tos
+    sp[2] = sp[0]
+
+    become next(vm, ip, &sp[2], tos)
+
+p_2drop(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-2)], sp[isize(-1)])
+
+p_2swap(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 4 then become underflow(vm, ip, sp, tos)
+
+    val a = sp[isize(-2)]
+    val b = sp[isize(-1)]
+
+    sp[isize(-2)] = sp[0]
+    sp[isize(-1)] = tos
+    sp[0] = a
+
+    become next(vm, ip, sp, b)
+
+p_2over(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 4 then become underflow(vm, ip, sp, tos)
+    if vm.slim - sp < 2 then become overflow(vm, ip, sp, tos)
+
+    sp[1] = tos
+    sp[2] = sp[isize(-2)]
+
+    become next(vm, ip, &sp[2], sp[isize(-1)])
+
+p_tor(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    val rp = &vm.rp[1]
+
+    if vm.rlim - rp <= 0 then become rs_overflow(vm, ip, sp, tos)
+
+    rp[0] = tos
+    vm.rp = rp
+
+    become next(vm, ip, &sp[isize(-1)], sp[0])
+
+p_rfrom(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    val rp = vm.rp
+
+    if rp - vm.r0 <= 0 then become rs_underflow(vm, ip, sp, tos)
+    if vm.slim - sp <= 0 then become overflow(vm, ip, sp, tos)
+
+    sp[1] = tos
+    vm.rp = &rp[isize(-1)]
+
+    become next(vm, ip, &sp[1], rp[0])
+
+p_rfetch(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if vm.rp - vm.r0 <= 0 then become rs_underflow(vm, ip, sp, tos)
+    if vm.slim - sp <= 0 then become overflow(vm, ip, sp, tos)
+
+    sp[1] = tos
+
+    become next(vm, ip, &sp[1], vm.rp[0])
+
+// ---------------------------------------------------------------------------------------------------
+// Arithmetic and logic. A binary operator takes the second item and the top and leaves one.
+
+p_plus(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], sp[0] + tos)
+
+p_minus(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], sp[0] - tos)
+
+p_star(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], sp[0] * tos)
+
+p_and(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], sp[0] & tos)
+
+p_or(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], sp[0] | tos)
+
+p_xor(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], sp[0] ^ tos)
+
+// A shift by a cell's width or more leaves nothing, as it would bit by bit.
+p_lshift(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    val n = usize(tos)
+
+    become next(vm, ip, &sp[isize(-1)], if n >= BITS then 0 else isize(usize(sp[0]) << n))
+
+p_rshift(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    val n = usize(tos)
+
+    become next(vm, ip, &sp[isize(-1)], if n >= BITS then 0 else isize(usize(sp[0]) >> n))
+
+p_eq(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], flag(sp[0] == tos))
+
+p_ne(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], flag(sp[0] != tos))
+
+p_lt(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], flag(sp[0] < tos))
+
+p_gt(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], flag(sp[0] > tos))
+
+p_ult(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], flag(usize(sp[0]) < usize(tos)))
+
+p_ugt(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], flag(usize(sp[0]) > usize(tos)))
+
+p_min(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], if sp[0] < tos then sp[0] else tos)
+
+p_max(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], if sp[0] > tos then sp[0] else tos)
+
+// Division is symmetric: the quotient rounds toward zero, as C's does, and the remainder takes the
+// dividend's sign. The one quotient that does not fit, the most negative number divided by -1,
+// wraps as negation does.
+quot(a: isize, b: isize) -> isize = if b == -1 then 0 - a else a / b
+
+rem(a: isize, b: isize) -> isize = if b == -1 then 0 else a % b
+
+p_slash(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+    if tos == 0 then become divide_by_zero(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], quot(sp[0], tos))
+
+p_mod(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+    if tos == 0 then become divide_by_zero(vm, ip, sp, tos)
+
+    become next(vm, ip, &sp[isize(-1)], rem(sp[0], tos))
+
+p_slashmod(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+    if tos == 0 then become divide_by_zero(vm, ip, sp, tos)
+
+    val a = sp[0]
+
+    sp[0] = rem(a, tos)
+
+    become next(vm, ip, sp, quot(a, tos))
+
+// One-operand operators.
+p_invert(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, sp, ~tos)
+
+p_negate(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, sp, 0 - tos)
+
+p_abs(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, sp, if tos < 0 then 0 - tos else tos)
+
+p_1plus(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, sp, tos + 1)
+
+p_1minus(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, sp, tos - 1)
+
+p_2star(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, sp, tos << 1)
+
+p_2slash(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, sp, tos >> 1)
+
+p_0eq(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, sp, flag(tos == 0))
+
+p_0ne(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, sp, flag(tos != 0))
+
+p_0lt(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, sp, flag(tos < 0))
+
+p_0gt(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, sp, flag(tos > 0))
+
+// ---------------------------------------------------------------------------------------------------
+// Memory. An address is a number; these read and write whatever it names.
+
+p_fetch(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, sp, cell_at(usize(tos))[0])
+
+p_store(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    cell_at(usize(tos))[0] = sp[0]
+
+    become next(vm, ip, &sp[isize(-2)], sp[isize(-1)])
+
+p_plusstore(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    val p = cell_at(usize(tos))
+
+    p[0] = p[0] + sp[0]
+
+    become next(vm, ip, &sp[isize(-2)], sp[isize(-1)])
+
+p_cfetch(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    become next(vm, ip, sp, isize(byte_at(usize(tos))[0]))
+
+p_cstore(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    byte_at(usize(tos))[0] = u8(sp[0])
+
+    become next(vm, ip, &sp[isize(-2)], sp[isize(-1)])

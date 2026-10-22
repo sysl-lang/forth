@@ -1,0 +1,15 @@
+// forth -- a Forth 2012 core, direct-threaded, written in sysl to find where sysl falls short.
+//
+// Two modules and a program:
+//
+// - `sh.sysl.forth` -- the machine, the inner and outer interpreters, every built-in word and a
+//   console over text in memory. It allocates nothing and declares no capability, so a board links
+//   it with a console of its own.
+// - `sh.sysl.forth.host` -- the console of a hosted program: standard input and output.
+// - `main.sysl` -- `forth file.fs` and `forth < file.fs`.
+
+package {
+  name    = "forth"
+  version = "0.1.0"
+  sysl    = "0.3.12"
+}

@@ -1,0 +1,403 @@
+module sh.sysl.forth
+@no_alloc
+
+// The dictionary and the text interpreter.
+//
+// **A header** is laid out in the dictionary as
+//
+//     link    one cell: the previous header's address, 0 for the first
+//     flags   one byte: F_IMMEDIATE, F_HIDDEN
+//     length  one byte
+//     name    the name's bytes, then padding to a cell
+//     code    one cell: the execution token is this cell's address
+//     does    one cell: the thread `DOES>` installed, for a word that has one
+//     body    the parameter field, which `>BODY` answers
+//
+// Every word has the `does` cell, used or not, so that `>BODY` is the same two cells past the token
+// for every word.
+
+// ---------------------------------------------------------------------------------------------------
+// Laying down the dictionary.
+
+// Whether `n` more bytes fit; a fault when they do not.
+reserve(vm: *Vm, n: usize) -> bool
+    if vm.here <= vm.hi && vm.hi - vm.here >= n then return true
+
+    fail(vm, E_DICTFULL)
+    false
+
+align_here(vm: *Vm)
+    val to = aligned(vm.here)
+
+    if reserve(vm, to - vm.here) then vm.here = to
+
+comma(vm: *Vm, x: isize)
+    if !reserve(vm, CELL) then return
+
+    cell_at(vm.here)[0] = x
+    vm.here += CELL
+
+comma_u(vm: *Vm, x: usize) = comma(vm, isize(x))
+
+ccomma(vm: *Vm, b: u8)
+    if !reserve(vm, 1) then return
+
+    byte_at(vm.here)[0] = b
+    vm.here += 1
+
+// Compile a reference to the word whose token is `xt`: its code, and the token too when the code
+// reads one.
+compile_xt(vm: *Vm, xt: usize)
+    val code: Code = ptr_cast(usize(cell_at(xt)[0]))
+
+    comma_u(vm, usize(code))
+
+    if takes_operand(code) then comma_u(vm, xt)
+
+compile_code(vm: *Vm, code: Code) = comma_u(vm, usize(code))
+
+// An inline string after the cell that uses it: its length, its bytes, padding to a cell.
+compile_string(vm: *Vm, s: []const u8)
+    comma_u(vm, s.len)
+
+    for b in s
+        ccomma(vm, b)
+
+    align_here(vm)
+
+// A new header for `name`, with its code cell set to `code`. The word is findable at once; `:` hides
+// its own until `;`.
+header(vm: *Vm, name: []const u8, code: Code) -> bool
+    if name.len == 0
+        fail(vm, E_ZERONAME)
+        return false
+
+    if name.len > 31
+        fail(vm, E_NAMELEN)
+        return false
+
+    align_here(vm)
+
+    if !reserve(vm, CELL + 2 + name.len + CELL + 2 * CELL) then return false
+
+    val h = vm.here
+
+    comma_u(vm, vm.latest)
+    ccomma(vm, 0)
+    ccomma(vm, u8(name.len))
+
+    for b in name
+        ccomma(vm, b)
+
+    align_here(vm)
+    vm.latest = h
+    vm.latest_xt = vm.here
+    compile_code(vm, code)
+    comma(vm, 0)
+    vm.error == 0
+
+// The parts of a header.
+link_of(h: usize) -> usize = usize(cell_at(h)[0])
+
+flags_of(h: usize) -> u8 = byte_at(h + CELL)[0]
+
+name_of(h: usize) -> []const u8 = byte_at(h + CELL + 2)[0..<usize(byte_at(h + CELL + 1)[0])]
+
+xt_of(h: usize) -> usize = aligned(h + CELL + 2 + usize(byte_at(h + CELL + 1)[0]))
+
+set_flag(h: usize, f: u8)
+    byte_at(h + CELL)[0] = byte_at(h + CELL)[0] | f
+
+clear_flag(h: usize, f: u8)
+    byte_at(h + CELL)[0] = byte_at(h + CELL)[0] & ~f
+
+// ASCII letters fold to upper case, so that `dup` finds `DUP`.
+upper(c: u8) -> u8 = if c >= u8('a') && c <= u8('z') then c - 32 else c
+
+same_name(a: []const u8, b: []const u8) -> bool
+    if a.len != b.len then return false
+
+    for i in 0..<a.len
+        if upper(a[i]) != upper(b[i]) then return false
+
+    true
+
+// The newest visible header named `name`, or 0.
+find(vm: *Vm, name: []const u8) -> usize
+    var h = vm.latest
+
+    while h != 0
+        if flags_of(h) & F_HIDDEN == 0 && same_name(name_of(h), name) then return h
+
+        h = link_of(h)
+
+    0
+
+// ---------------------------------------------------------------------------------------------------
+// Words written in sysl, primitives and constants, as the dictionary is built.
+
+prim(vm: *Vm, name: string, code: Code)
+    header(vm, name.bytes, code)
+
+slow(vm: *Vm, name: string, word: *extern(*Vm) -> unit)
+    if header(vm, name.bytes, &doslow) then comma_u(vm, usize(word))
+
+constant(vm: *Vm, name: string, x: isize)
+    if header(vm, name.bytes, &doconst) then comma(vm, x)
+
+immediate(vm: *Vm) = set_flag(vm.latest, F_IMMEDIATE)
+
+// ---------------------------------------------------------------------------------------------------
+// Parsing the input source.
+
+source_bytes(vm: *Vm) -> []const u8 = byte_at(vm.src)[0..<usize(vm.src_len)]
+
+// The next space-delimited name, skipping leading white space; empty when the source is used up.
+// Anything at or below a space counts as white space, so a tab separates words too.
+parse_name(vm: *Vm) -> []const u8
+    val s = source_bytes(vm)
+    var i = usize(vm.to_in)
+
+    while i < s.len && s[i] <= 32
+        i += 1
+
+    val start = i
+
+    while i < s.len && s[i] > 32
+        i += 1
+
+    vm.to_in = isize(if i < s.len then i + 1 else i)
+    s[start..<i]
+
+// Everything up to the next `delim`, or to the end; the delimiter is consumed.
+parse(vm: *Vm, delim: u8) -> []const u8
+    val s = source_bytes(vm)
+    val start = usize(vm.to_in)
+    var i = start
+
+    if i > s.len then i = s.len
+
+    val from = i
+
+    while i < s.len && s[i] != delim
+        i += 1
+
+    vm.to_in = isize(if i < s.len then i + 1 else i)
+    s[from..<i]
+
+// ---------------------------------------------------------------------------------------------------
+// Numbers.
+
+// A character's value as a digit, or -1.
+digit_value(c: u8) -> isize
+    if c >= u8('0') && c <= u8('9') then return isize(c - u8('0'))
+
+    val u = upper(c)
+
+    if u >= u8('A') && u <= u8('Z') then return isize(u - u8('A')) + 10
+
+    -1
+
+// `>NUMBER`'s loop: digits of `base` accumulated into `ud`. Answers the number and how many bytes
+// were digits.
+convert(ud: u128, s: []const u8, base: isize) -> (u128, usize)
+    var n = ud
+    var i: usize = 0
+
+    while i < s.len
+        val d = digit_value(s[i])
+
+        if d < 0 || d >= base then break
+
+        n = n * u128(usize(base)) + u128(usize(d))
+        i += 1
+
+    (n, i)
+
+// A whole token as a single-cell number: an optional `#`, `$` or `%` base prefix, an optional sign
+// and at least one digit; or a character in quotes, `'c'`. Anything else is not a number.
+number(vm: *Vm, s: []const u8) -> Option[isize]
+    if s.len == 3 && s[0] == u8('\'') && s[2] == u8('\'') then return Some(isize(s[1]))
+
+    var base = vm.base
+    var i: usize = 0
+
+    if s.len > 0
+        if s[0] == u8('#')
+            base = 10
+            i = 1
+        else if s[0] == u8('$')
+            base = 16
+            i = 1
+        else if s[0] == u8('%')
+            base = 2
+            i = 1
+
+    var negative = false
+
+    if i < s.len && s[i] == u8('-')
+        negative = true
+        i += 1
+
+    if i >= s.len || base < 2 || base > 36 then return None
+
+    val (n, used) = convert(0, s[i..], base)
+
+    if i + used != s.len then return None
+
+    val x = isize(n)
+
+    Some(if negative then 0 - x else x)
+
+// ---------------------------------------------------------------------------------------------------
+// The text interpreter.
+
+// Run one word now, through a thread of its own: its code, its token if the code reads one, and the
+// cell that hands control back here.
+execute(vm: *Vm, xt: usize)
+    var thread: [3]usize = [0, 0, 0]
+    val code: Code = ptr_cast(usize(cell_at(xt)[0]))
+
+    thread[0] = usize(code)
+
+    if takes_operand(code)
+        thread[1] = xt
+        thread[2] = usize(&p_halt)
+    else
+        thread[1] = usize(&p_halt)
+
+    run(vm, &thread[0])
+
+// Interpret the rest of the current input source: run or compile each word, push or compile each
+// number. Stops at the end of the source or at the first fault.
+interpret(vm: *Vm)
+    loop
+        val name = parse_name(vm)
+
+        if name.len == 0 then return
+
+        val h = find(vm, name)
+
+        if h != 0
+            val xt = xt_of(h)
+
+            if vm.state == 0 || flags_of(h) & F_IMMEDIATE != 0
+                execute(vm, xt)
+            else
+                compile_xt(vm, xt)
+        else
+            number(vm, name) match
+                Some(x) ->
+                    if vm.state == 0
+                        push(vm, x)
+                    else
+                        compile_code(vm, &p_lit)
+                        comma(vm, x)
+                None ->
+                    val n = if name.len > vm.missing.len then vm.missing.len else name.len
+
+                    for i in 0..<n
+                        vm.missing[i] = name[i]
+
+                    vm.missing_len = n
+                    fail(vm, E_UNDEFINED)
+
+        if vm.error != 0 then return
+end interpret
+
+// Interpret `len` bytes at `addr` as the input source, then put the previous source back.
+evaluate_at(vm: *Vm, addr: usize, len: isize)
+    val src = vm.src
+    val src_len = vm.src_len
+    val to_in = vm.to_in
+    val src_id = vm.src_id
+
+    vm.src = addr
+    vm.src_len = len
+    vm.to_in = 0
+    vm.src_id = -1
+    interpret(vm)
+    vm.src = src
+    vm.src_len = src_len
+    vm.to_in = to_in
+    vm.src_id = src_id
+
+// Interpret a string. The string must outlive the call, which it does wherever it is a literal or
+// the caller's own storage.
+evaluate(vm: *Vm, text: []const u8)
+    if text.len > 0 then evaluate_at(vm, usize(&text[0]), isize(text.len))
+
+// ---------------------------------------------------------------------------------------------------
+// The outer loop: lines from the console until it ends, faults reported and survived.
+
+// What a fault says. `ABORT`, `QUIT` and `ABORT"` say nothing more: the last has shown its own
+// message already.
+describe(code: isize) -> string
+    if code == E_UNDERFLOW then return "stack underflow"
+    if code == E_OVERFLOW then return "stack overflow"
+    if code == E_RSOVERFLOW then return "return stack overflow"
+    if code == E_RSUNDERFLOW then return "return stack underflow"
+    if code == E_DICTFULL then return "dictionary full"
+    if code == E_DIVZERO then return "division by zero"
+    if code == E_ZERONAME then return "a name was expected"
+    if code == E_NAMELEN then return "name too long"
+    if code == E_CONTROL then return "unfinished control structure"
+    if code == E_COMPILEONLY then return "interpreting a compile-only word"
+
+    "error"
+
+report(vm: *Vm)
+    val code = vm.error
+
+    if code == E_ABORT || code == E_QUIT || code == E_ABORTQ then return
+
+    if code == E_UNDEFINED
+        vm.con.send(vm.missing[0..<vm.missing_len])
+        vm.con.send(" ?\n".bytes)
+        return
+
+    vm.con.send(describe(code).bytes)
+    vm.con.emit(10)
+
+// Back to a state the outer interpreter can go on from. An unfinished definition is taken back out
+// of the dictionary; everything defined before it stays. `QUIT` keeps the data stack, as the standard
+// has it, and every other fault empties it.
+recover(vm: *Vm)
+    if vm.def_start != 0
+        vm.here = vm.def_start
+        vm.latest = link_of(vm.def_start)
+        vm.latest_xt = if vm.latest == 0 then 0 else xt_of(vm.latest)
+        vm.def_start = 0
+
+    if vm.error != E_QUIT
+        vm.sp = vm.s0
+        vm.tos = 0
+
+    vm.rp = vm.r0
+    vm.state = 0
+    vm.error = 0
+
+// Read a line into the terminal input buffer and make it the input source. False at the end.
+refill_console(vm: *Vm) -> bool
+    val n = vm.con.refill(vm.tib[..])
+
+    if n < 0 then return false
+
+    vm.src = usize(&vm.tib[0])
+    vm.src_len = n
+    vm.to_in = 0
+    vm.src_id = 0
+    true
+
+// Interpret every line the console gives, until it runs out or `BYE`. Answers true for `BYE`.
+quit(vm: *Vm) -> bool
+    loop
+        if !refill_console(vm) then return false
+
+        interpret(vm)
+
+        if vm.error == E_BYE then return true
+
+        if vm.error != 0
+            report(vm)
+            recover(vm)

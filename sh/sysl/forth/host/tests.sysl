@@ -1,0 +1,24 @@
+module sh.sysl.forth.host
+@tests
+
+// The hosted console's own half: lines out of a file's text. Standard input and output are the
+// library's, and `forth < file` is what exercises them.
+
+@test("a file's text is handed out a line at a time, without its line endings")
+host_refill_splits_lines()
+    var c = script_console_of("1 2\r\n3\n\nlast".bytes)
+    var line: [16]u8 = [0; 16]
+
+    assert(c.refill(line[..]) == 3 && line[0..<3] == "1 2".bytes, "a CRLF line")
+    assert(c.refill(line[..]) == 1 && line[0] == u8('3'), "an LF line")
+    assert(c.refill(line[..]) == 0, "an empty line")
+    assert(c.refill(line[..]) == 4 && line[0..<4] == "last".bytes, "a last line with no ending")
+    assert(c.refill(line[..]) == -1, "then the end")
+
+@test("a line longer than the buffer is cut to fit and the rest of it is skipped")
+host_refill_cuts_long_lines()
+    var c = script_console_of("abcdefgh\nnext".bytes)
+    var line: [4]u8 = [0; 4]
+
+    assert(c.refill(line[..]) == 4 && line[..] == "abcd".bytes, "cut")
+    assert(c.refill(line[..]) == 4 && line[..] == "next".bytes, "the next line is whole")
