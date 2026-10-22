@@ -1,0 +1,133 @@
+module sh.sysl.forth.host
+
+import sh.sysl.forth.{Console, E_BYE, E_QUIT, Vm, find, flags_of, F_HIDDEN, interpret_line, link_of, name_of,
+                      recover, same_name}
+import sh.sysl.repl.{Done, More, Out, Outcome, Prompts, Quit}
+import sysl.text.from_utf8_unchecked
+
+// Forth at a terminal, through `sh.sysl.repl`'s line editor: a traditional prompt, where each line is
+// interpreted as it is entered and answered with ` ok`.
+//
+// The core knows nothing of this. The REPL hands the core one line at a time with `interpret_line`,
+// and while an evaluation runs the core's console is a `ReplConsole` that writes where the REPL says.
+
+// The console during one evaluation: output through the REPL's `Out`, so that every `\n` reaches the
+// terminal as `\r\n` and the loop knows whether the next prompt needs a fresh row; the keyboard that
+// `KEY` and `ACCEPT` read is the REPL's terminal, which is out of raw mode while a line is evaluated.
+struct ReplConsole
+    out: *Out
+
+// One byte from the terminal, or -1 when it has ended.
+term_byte(c: *ReplConsole) -> isize
+    c.out.term.flush()
+
+    c.out.term.read_byte() match
+        Some(b) -> isize(b)
+        None -> -1
+
+impl Console for ReplConsole
+    emit(*self, c: u8)
+        val one: [1]u8 = [c]
+
+        self.out.write(one[..])
+
+    send(*self, s: []const u8) = self.out.write(s)
+
+    key(*self) -> isize = term_byte(self)
+
+    accept(*self, into: []u8) -> isize
+        var n: usize = 0
+
+        loop
+            val b = term_byte(self)
+
+            if b < 0
+                if n == 0 then return -1
+                break
+
+            if b == 10 || b == 13 then break
+
+            if n < into.len
+                into[n] = u8(b)
+                n += 1
+
+        isize(n)
+    end accept
+
+    refill(*self, into: []u8) -> isize = self.accept(into)
+end ReplConsole
+
+// The REPL's prompts: none for a new line, as is a Forth's way, `... ` while a definition is open,
+// and a banner.
+forth_prompts() -> Prompts = Prompts("", "... ", "forth 0.1.0 -- BYE or Ctrl-D to leave")
+
+// A REPL session over a booted machine.
+//
+// **A definition may span lines.** While one is open the evaluator answers `More`, and the loop hands
+// back the whole input so far, the lines joined by newlines; `done` is how much of it has been
+// interpreted already, so only the new line is.
+struct Session
+    vm: *Vm
+    // The console the machine had before the session, put back after every evaluation.
+    home: *Console
+    done: usize
+
+// A session over `vm`, which has been booted.
+session(vm: *Vm) -> Session = Session(vm, vm.con, 0)
+
+// Interpret the newest line of `input`: ` ok` after it when it ran to its end, the fault's message
+// when it did not, `More` while a definition is still open and `Quit` for `BYE`.
+eval_line(s: *Session, input: string, out: *Out) -> Outcome
+    val vm = s.vm
+    var from: usize = 0
+
+    if s.done > 0
+        if input.len > s.done && input.bytes[s.done] == 10
+            from = s.done + 1
+        else
+            // The loop dropped the continued input (Ctrl-C), so the open definition goes with it; the
+            // data stack stays, as `QUIT` would leave it.
+            vm.error = E_QUIT
+            recover(vm)
+
+    s.done = 0
+
+    var con = ReplConsole(out)
+
+    vm.con = &con
+
+    val code = interpret_line(vm, input.bytes[from..])
+
+    vm.con = s.home
+
+    if code == E_BYE then return Quit
+
+    if code == 0 && vm.state != 0
+        s.done = input.len
+        return More
+
+    if code == 0 then out.print(" ok")
+
+    Done
+end eval_line
+
+// The `i`th word in the dictionary whose name starts with `word`, whatever the case of either, as
+// `FIND` matches. A name defined twice is offered once, and a hidden one -- the definition being
+// compiled -- not at all.
+complete_word(vm: *Vm, word: string, i: usize) -> Option[string]
+    var seen: usize = 0
+    var h = vm.latest
+
+    while h != 0
+        val name = name_of(h)
+        val starts = name.len >= word.len && same_name(name[0..<word.len], word.bytes)
+
+        if starts && flags_of(h) & F_HIDDEN == 0 && find(vm, name) == h
+            if seen == i then return Some(from_utf8_unchecked(name))
+
+            seen += 1
+
+        h = link_of(h)
+
+    None
+end complete_word

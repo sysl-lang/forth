@@ -389,15 +389,37 @@ refill_console(vm: *Vm) -> bool
     vm.src_id = 0
     true
 
+// Interpret the current input source to its end, as the outer loop does with each line: a fault is
+// reported and recovered from. Answers what happened -- 0 for a line that ran to its end, `E_BYE`,
+// or the fault's code -- so a front end can say ` ok` or not.
+interpret_source(vm: *Vm) -> isize
+    interpret(vm)
+
+    val code = vm.error
+
+    if code == E_BYE then return code
+
+    if code != 0
+        report(vm)
+        recover(vm)
+
+    code
+end interpret_source
+
+// Interpret `text` as a line from the console, as `interpret_source` does. The text is the input
+// source itself, not a copy, so it is not cut to the terminal input buffer's size; it must stay put
+// for the call.
+interpret_line(vm: *Vm, text: []const u8) -> isize
+    vm.src = if text.len > 0 then usize(&text[0]) else usize(&vm.tib[0])
+    vm.src_len = isize(text.len)
+    vm.to_in = 0
+    vm.src_id = 0
+
+    interpret_source(vm)
+
 // Interpret every line the console gives, until it runs out or `BYE`. Answers true for `BYE`.
 quit(vm: *Vm) -> bool
     loop
         if !refill_console(vm) then return false
 
-        interpret(vm)
-
-        if vm.error == E_BYE then return true
-
-        if vm.error != 0
-            report(vm)
-            recover(vm)
+        if interpret_source(vm) == E_BYE then return true

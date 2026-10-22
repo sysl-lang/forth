@@ -1,0 +1,118 @@
+module sh.sysl.forth.host
+@tests
+
+import sh.sysl.forth.{Vm, boot, depth_of, interpret_line}
+import sh.sysl.repl.{Ended, editor, mock_terminal, no_hint, run_with}
+import sysl.text.split
+
+// The REPL, driven through `sh.sysl.repl`'s `MockTerminal`: keys in, and the exact bytes the terminal
+// was sent out. The loop, editor and prompts are the ones `forth` runs at a terminal.
+
+var region: [65536]usize
+var vm: Vm
+
+struct Ran
+    ended: Ended
+    text: string
+
+// The REPL over a fresh machine, sent `keys`.
+repl_of(keys: string) -> Ran
+    var con = keyboard_console()
+
+    boot(&vm, usize(&region[0]), region.len * sizeof(usize), &con)
+
+    val out: []u8 = [0; 65536]
+    var t = mock_terminal(keys.bytes, out)
+    var ed = editor([0; 256], [0; 256], [0; 1024], 16)
+    var s = session(&vm)
+    val join: []u8 = [0; 1024]
+
+    val ended = run_with(&ed, &t, join, forth_prompts(), (word, i) -> complete_word(&vm, word, i), no_hint,
+                         (line, o) -> eval_line(&s, line, o))
+
+    Ran(ended, t.text())
+end repl_of
+
+// How many times `part` occurs in `text`.
+count(text: string, part: string) -> usize = split(text, part).len - 1
+
+@test("a line is interpreted when it is entered and answered with ok")
+repl_ok_after_a_line()
+    val r = repl_of("1 2 + .\r")
+
+    assert(r.text.starts_with("forth 0.1.0 -- BYE or Ctrl-D to leave\r\n"), r.text)
+    assert(r.text.contains("1 2 + .\u{1b}[0K\r\u{1b}[7C\r\n3  ok\r\n"), r.text)
+    assert(r.ended == Ended.EndOfInput, "the keys ran out")
+
+@test("a definition spans two lines, the second at the continuation prompt, and only it gets ok")
+repl_definition_across_lines()
+    val r = repl_of(": SQ  DUP *\r;\r7 SQ .\r")
+
+    assert(r.text.contains("\r... ;\u{1b}[0K"), r.text)
+    assert(r.text.contains("\r\n49  ok\r\n"), r.text)
+    assert(count(r.text, " ok") == 2, r.text)
+    assert(vm.state == 0, "compiling ended")
+
+@test("an error is reported without ok, the stack is emptied, and the dictionary stays")
+repl_error_then_a_working_line()
+    val r = repl_of(": FIVE 5 ;\r1 NOPE\rDEPTH . FIVE .\r")
+
+    assert(r.text.contains("\r\nNOPE ?\r\n"), r.text)
+    assert(r.text.contains("\r\n0 5  ok\r\n"), r.text)
+    assert(count(r.text, " ok") == 2, r.text)
+
+@test("an error inside a definition takes the definition back out, and the next line starts fresh")
+repl_error_while_compiling()
+    val r = repl_of(": BAD 1\rNOPE\rBAD\r2 .\r")
+
+    assert(r.text.contains("\r\nNOPE ?\r\n"), r.text)
+    assert(r.text.contains("\r\nBAD ?\r\n"), r.text)
+    assert(r.text.contains("\r\n2  ok\r\n"), r.text)
+
+@test("Ctrl-C at the continuation prompt abandons the definition, and the stack stays")
+repl_interrupt_abandons_a_definition()
+    val r = repl_of("9 : HALF 1\r\u{3}DEPTH . HALF\r")
+
+    assert(r.text.contains("\r\n1 HALF ?\r\n"), r.text)
+    assert(vm.state == 0, "compiling ended")
+
+@test("Tab completes a built-in word whatever its case")
+repl_completes_a_builtin()
+    val r = repl_of("1 2 swa\t . .\r")
+
+    assert(r.text.contains("\r\n1 2  ok\r\n"), r.text)
+
+@test("Tab completes a word the user defined")
+repl_completes_a_user_word()
+    val r = repl_of(": FROBNICATE 42 ;\rFROB\t .\r")
+
+    assert(r.text.contains("\r\n42  ok\r\n"), r.text)
+
+@test("completion offers every word with the prefix once, newest first, and never the one being defined")
+repl_completion_candidates()
+    var con = keyboard_console()
+
+    boot(&vm, usize(&region[0]), region.len * sizeof(usize), &con)
+
+    interpret_line(&vm, ": ZAP 1 ; : ZAP 2 ; : ZOOM 3 ; : ZEN".bytes)
+
+    assert(complete_word(&vm, "z", 0) == Some("ZOOM"), "newest first")
+    assert(complete_word(&vm, "z", 1) == Some("ZAP"), "a redefined word once")
+    assert(complete_word(&vm, "z", 2) == None, "and not ZEN, still being compiled")
+    assert(complete_word(&vm, "QQQ", 0) == None, "no candidate")
+
+@test("BYE leaves the loop and nothing after it runs")
+repl_bye()
+    val r = repl_of("1 .\rBYE\r2 .\r")
+
+    assert(r.ended == Ended.Quit, "Quit")
+    assert(r.text.contains("\r\n1  ok\r\n"), r.text)
+    assert(!r.text.contains("2  ok"), r.text)
+
+@test("Ctrl-D on an empty line ends the loop, keeping nothing open")
+repl_ctrl_d()
+    val r = repl_of("1 .\r\u{4}2 .\r")
+
+    assert(r.ended == Ended.EndOfInput, "EndOfInput")
+    assert(!r.text.contains("2  ok"), r.text)
+    assert(depth_of(&vm) == 0, "the stack")

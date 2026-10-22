@@ -260,6 +260,17 @@ fault_bye()
     assert(quit(&vm), "BYE was seen")
     assert(written(&con) == "1 ".bytes, "nothing after it ran")
 
+@test("one line handed in answers how it ended, with a fault reported and recovered from")
+interpret_line_answers()
+    start("".bytes)
+    assert(interpret_line(&vm, "1 2 + .".bytes) == 0, "a line that ran to its end")
+    assert(interpret_line(&vm, ": SQ DUP *".bytes) == 0 && vm.state != 0, "still compiling")
+    assert(interpret_line(&vm, ";".bytes) == 0 && vm.state == 0, "finished")
+    assert(interpret_line(&vm, "1 NOPE".bytes) == E_UNDEFINED && depth_of(&vm) == 0, "a fault empties the stack")
+    assert(interpret_line(&vm, "".bytes) == 0, "an empty line")
+    assert(interpret_line(&vm, "7 SQ . BYE 8 .".bytes) == E_BYE, "BYE")
+    assert(written(&con) == "3 NOPE ?\n49 ".bytes, "what the lines printed")
+
 // ---------------------------------------------------------------------------------------------------
 // Arithmetic choices the standard leaves open.
 

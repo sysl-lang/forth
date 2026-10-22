@@ -1,5 +1,6 @@
-// forth: run Forth source from files, or from standard input.
+// forth: a Forth REPL at the terminal, or Forth source run from files or standard input.
 //
+//     forth                 at a terminal: the REPL, with line editing, completion and history
 //     forth file.fs ...     interpret each file in turn, then end
 //     forth < file.fs       interpret standard input to its end
 //
@@ -7,8 +8,11 @@
 // with the dictionary as it was.
 
 import sh.sysl.forth.{Vm, boot, quit}
-import sh.sysl.forth.host.{keyboard_console, script_console_of}
+import sh.sysl.forth.host.{complete_word, eval_line, forth_prompts, keyboard_console, script_console_of, session}
+import sh.sysl.repl.no_hint
+import sh.sysl.repl.host.{config, home_file, repl_with}
 import sysl.fs.read_bytes
+import sysl.posix.tty.is_tty
 
 // The dictionary: 128K cells, a megabyte on a 64-bit machine.
 var region: [131072]usize
@@ -20,7 +24,17 @@ main(args: []string)
     boot(&vm, usize(&region[0]), region.len * sizeof(usize), &con)
 
     if args.len < 2
-        quit(&vm)
+        if is_tty(0)
+            var c = config("")
+            var s = session(&vm)
+
+            c.prompts = forth_prompts()
+            c.history_file = home_file(".forth_history")
+
+            repl_with(c, (word, i) -> complete_word(&vm, word, i), no_hint, (line, out) -> eval_line(&s, line, out))
+        else
+            quit(&vm)
+
         return
 
     for i in 1..<args.len
