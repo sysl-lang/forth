@@ -72,7 +72,8 @@ const E_UNSUPPORTED: isize = -21
 const E_CONTROL: isize = -22
 const E_RANGE: isize = -24
 const E_QUIT: isize = -56
-// Not a `THROW` code: `BYE` asked the host to end the program.
+// What `interpret_source` answers when `BYE` asked the host to end the program. `BYE` stops the
+// threads as a fault does, with this code and `Vm.bye` set, and no `CATCH` catches it.
 const E_BYE: isize = 1
 
 struct Vm
@@ -95,6 +96,13 @@ struct Vm
 
     // How many faults the outer interpreter has reported, so that a run can be checked for none.
     faults: isize
+
+    // Set by `BYE`, whose `E_BYE` no `CATCH` catches.
+    bye: bool
+
+    // The message of the `ABORT"` that threw, shown only if nothing catches it.
+    abort_msg: usize
+    abort_len: usize
 
     // The variables Forth programs read and write by address: `STATE`, `BASE` and `>IN`.
     state: isize
@@ -248,6 +256,15 @@ pop_d(vm: *Vm) -> DCell
     val lo = DCell(UDCell(usize(pop(vm))))
 
     (hi << BITS) | lo
+
+// Make the data stack `d` deep, as `THROW` leaves it for `CATCH`. Below the top, the items are what the
+// stack's storage holds; the top, kept apart from it, is read back from there too unless the depth
+// has not changed. So items that were on the stack and were never touched come back as they were.
+set_depth(vm: *Vm, d: isize)
+    if d == depth_of(vm) then return
+
+    vm.sp = &vm.s0[d]
+    vm.tos = vm.s0[d + 1]
 
 // Empty both stacks.
 reset_stacks(vm: *Vm)

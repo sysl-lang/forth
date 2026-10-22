@@ -33,9 +33,10 @@ sysl build .
 ```
 
 `BYE` ends the program. A fault — an undefined word, a stack underflow or overflow, a division by
-zero, a full dictionary — is reported on a line of its own, the stacks are emptied, any definition
-that was being compiled is taken back out, and interpretation goes on with the next line. Everything
-defined before the fault stays. Names are found whatever their case.
+zero, a full dictionary, any `THROW` nothing catches — is reported on a line of its own with the
+standard's message for its code, the stacks are emptied, any definition that was being compiled is
+taken back out, and interpretation goes on with the next line. Everything defined before the fault
+stays. Names are found whatever their case.
 
 ## The REPL
 
@@ -58,7 +59,7 @@ input never starts the REPL: `forth < file.fs` reads the file as it always has, 
 
 ## The words
 
-185 of them:
+187 of them:
 
 - **Stack:** `DUP ?DUP DROP SWAP OVER ROT NIP TUCK 2DUP 2DROP 2SWAP 2OVER >R R> R@ DEPTH PICK ROLL`
 - **Arithmetic and logic:** `+ - * / MOD /MOD */ */MOD AND OR XOR INVERT NEGATE ABS 1+ 1- 2* 2/
@@ -74,6 +75,7 @@ input never starts the REPL: `forth < file.fs` reads the file as it always has, 
 - **Output and input:** `EMIT TYPE CR SPACE SPACES . U. .S <# # #S #> HOLD SIGN KEY ACCEPT WORDS
   ENVIRONMENT?`
 - **Leaving:** `ABORT QUIT BYE`
+- **Exception:** `CATCH THROW`
 - **Core Extension, beyond the above:** `2>R 2R> 2R@ WITHIN VALUE TO DEFER IS DEFER@ DEFER!
   ACTION-OF MARKER BUFFER: [COMPILE] CASE OF ENDOF ENDCASE C" S\" PAD ERASE UNUSED SAVE-INPUT
   RESTORE-INPUT .R U.R HOLDS`
@@ -92,8 +94,14 @@ the target's address width with `#if ptr16` / `ptr32` / `ptr64`:
 | 32 bits (`thumb`, `riscv32`, `wasm32`, `x86`) | `isize`, 4 bytes | `i64` |
 | 16 bits (`craft`) | `isize`, 2 bytes | `i32` |
 
-`ENVIRONMENT?` answers false to every query. There is no `THROW`/`CATCH`, no `DOUBLE` word set and no
-`WORDLIST`s yet.
+`ENVIRONMENT?` answers false to every query. There is no `DOUBLE` word set and no `WORDLIST`s yet.
+
+**Every fault is a `THROW`**, with Forth 2012's code for it (-4 for a stack underflow, -13 for an
+undefined word, -10 for a division by zero), so `CATCH` catches what the machine raises exactly as it
+catches a program's own `THROW`. `ABORT` is `-1 THROW` and `ABORT"` is `-2 THROW`, whose message is
+shown only if nothing catches it. Uncaught, a code the standard lists is reported with the standard's
+message (`-9 THROW` says `invalid memory address`), an undefined word by its name and `?`, and any
+other code as `uncaught exception 42`. `BYE` is the one thing `CATCH` lets through.
 
 ## How it is built
 
@@ -158,6 +166,12 @@ so **`NEXT` is two instructions, `ldr x4, [x1], #8` and `br x4`**, with no call,
 dispatch loop. A fault ends the chain by *returning* instead: every frame in between was replaced, so
 the return lands in `run`, which started the thread.
 
+**That return is `THROW`, and `CATCH` is a `run`.** `THROW` records its code in the machine and
+returns; `CATCH` notes the data stack's depth, the return stack pointer and the input source, and runs
+its token in a nested `run`. However deep the `THROW` — colon definitions, `EXECUTE`, `EVALUATE`
+inside `EVALUATE` — it returns through every sysl frame in between to that `run`, and `CATCH` puts the
+three back and answers the code. No `setjmp`, no unwinding tables, and the hot path is unchanged.
+
 A word that is not a primitive is compiled as two cells: the address of its code (`docol` for a colon
 definition, `dovar`, `doconst`, `dodoes`, or `doslow` for a word written in sysl) and its execution
 token, which that code reads as an operand. `docol` pushes the return address and jumps to the body —
@@ -170,7 +184,7 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
 
 ## Tests
 
-`sysl test .` runs 58 tests:
+`sysl test .` runs 68 tests:
 
 - **The Hayes Core tests: 638 of 638 pass.** `tests/tester.fr` and `tests/core.fr` are John Hayes's
   files from [gerryjackson/forth2012-test-suite](https://github.com/gerryjackson/forth2012-test-suite)
@@ -188,6 +202,7 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
   |---|---|---|---:|---:|
   | `tests/coreplustest.fth` | `src/coreplustest.fth` | `d967d1d367b3c0bf91b13944694fb5ac26fa793a63be3ea58bf50779971ef47b` | 101 | 0 |
   | `tests/coreexttest.fth` | `src/coreexttest.fth` | `f35b9a78ac463985e2cfa616f19893204e25f5a51f0512324d8d45fe9e73b71b` | 383 | 0 |
+  | `tests/exceptiontest.fth` | `src/exceptiontest.fth` | `92bce976b74a799f0a7c9f4200e46832eea6371d117e522dea4550a6fe067083` | 9 | 0 |
 
   The suite's helpers, loaded before the word-set files as its own `runtests.fth` loads them:
   `tests/utilities.fth` (`src/utilities.fth`,
@@ -204,12 +219,21 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
 - Every fault: underflow at the prompt and inside a thread, an undefined word at the prompt and inside
   a definition, a dictionary full by `ALLOT` and while compiling, division by zero in each of the
   seven dividing words, return-stack overflow, data-stack overflow, `QUIT`, `ABORT`, `ABORT"`, `BYE`.
+- `CATCH` and `THROW`: a `THROW` from nested definitions with both stacks put back, from inside
+  `EXECUTE` inside a `DO` loop that goes on after, the machine's own faults caught with their codes
+  and the input source put back, `0 THROW`, the standard messages and `uncaught exception n` when
+  nothing catches, `ABORT"`'s message shown only uncaught, `BYE` going through `CATCH`, and a thrown
+  `1` not ending the program.
+- The Core Extension words where the suite does not reach: an empty `DEFER`, `MARKER`, `CASE` with no
+  match, `S\"` and `C"` interpreted, `RESTORE-INPUT` of another source, `2R>` underflow, `.R` fields,
+  a negative `BUFFER:`.
 - The host console's line splitting, and `interpret_line`'s answers.
 - The REPL, driven through `repl`'s `MockTerminal` with scripted keys and checked against the exact
   bytes sent to the terminal: ` ok` after a line, a definition across two lines at the continuation
-  prompt, an error followed by a working line, an error inside a definition, Ctrl-C abandoning a
-  definition, Tab completing a built-in word in lower case and a word of the user's, which names
-  completion offers, `BYE`, and Ctrl-D.
+  prompt, an error followed by a working line, an uncaught `THROW` showing the standard message and
+  the REPL going on, a caught one answered with ` ok`, an error inside a definition, Ctrl-C
+  abandoning a definition, Tab completing a built-in word in lower case and a word of the user's,
+  which names completion offers, `BYE`, and Ctrl-D.
 
 ## Speed
 

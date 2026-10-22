@@ -330,35 +330,128 @@ evaluate(vm: *Vm, text: []const u8)
 // ---------------------------------------------------------------------------------------------------
 // The outer loop: lines from the console until it ends, faults reported and survived.
 
-// What a fault says. `ABORT`, `QUIT` and `ABORT"` say nothing more: the last has shown its own
-// message already.
-describe(code: isize) -> string
-    if code == E_UNDERFLOW then return "stack underflow"
-    if code == E_OVERFLOW then return "stack overflow"
-    if code == E_RSOVERFLOW then return "return stack overflow"
-    if code == E_RSUNDERFLOW then return "return stack underflow"
-    if code == E_DICTFULL then return "dictionary full"
-    if code == E_DIVZERO then return "division by zero"
-    if code == E_ZERONAME then return "a name was expected"
-    if code == E_NAMELEN then return "name too long"
-    if code == E_CONTROL then return "unfinished control structure"
-    if code == E_UNSUPPORTED then return "unsupported operation"
-    if code == E_RANGE then return "invalid numeric argument"
-    if code == E_COMPILEONLY then return "interpreting a compile-only word"
+// What each of Forth 2012's `THROW` codes means, from -1 down: the standard's own wording, table 9.1.
+val MESSAGES: [79]string = [
+    "ABORT",
+    "ABORT\"",
+    "stack overflow",
+    "stack underflow",
+    "return stack overflow",
+    "return stack underflow",
+    "do-loops nested too deeply during execution",
+    "dictionary overflow",
+    "invalid memory address",
+    "division by zero",
+    "result out of range",
+    "argument type mismatch",
+    "undefined word",
+    "interpreting a compile-only word",
+    "invalid FORGET",
+    "attempt to use zero-length string as a name",
+    "pictured numeric output string overflow",
+    "parsed string overflow",
+    "definition name too long",
+    "write to a read-only location",
+    "unsupported operation",
+    "control structure mismatch",
+    "address alignment exception",
+    "invalid numeric argument",
+    "return stack imbalance",
+    "loop parameters unavailable",
+    "invalid recursion",
+    "user interrupt",
+    "compiler nesting",
+    "obsolescent feature",
+    ">BODY used on non-CREATEd definition",
+    "invalid name argument",
+    "block read exception",
+    "block write exception",
+    "invalid block number",
+    "invalid file position",
+    "file I/O exception",
+    "non-existent file",
+    "unexpected end of file",
+    "invalid BASE for floating point conversion",
+    "loss of precision",
+    "floating-point divide by zero",
+    "floating-point result out of range",
+    "floating-point stack overflow",
+    "floating-point stack underflow",
+    "floating-point invalid argument",
+    "compilation word list deleted",
+    "invalid POSTPONE",
+    "search-order overflow",
+    "search-order underflow",
+    "compilation word list changed",
+    "control-flow stack overflow",
+    "exception stack overflow",
+    "floating-point underflow",
+    "floating-point unidentified fault",
+    "QUIT",
+    "exception in sending or receiving a character",
+    "[IF], [ELSE], or [THEN] exception",
+    "ALLOCATE",
+    "FREE",
+    "RESIZE",
+    "CLOSE-FILE",
+    "CREATE-FILE",
+    "DELETE-FILE",
+    "FILE-POSITION",
+    "FILE-SIZE",
+    "FILE-STATUS",
+    "FLUSH-FILE",
+    "OPEN-FILE",
+    "READ-FILE",
+    "READ-LINE",
+    "RENAME-FILE",
+    "REPOSITION-FILE",
+    "RESIZE-FILE",
+    "WRITE-FILE",
+    "WRITE-LINE",
+    "Malformed xchar",
+    "SUBSTITUTE",
+    "REPLACES",
+]
 
-    "error"
+// The standard's message for a `THROW` code, or nothing for a code it does not list.
+describe(code: isize) -> Option[string]
+    if code < 0 && code >= -isize(MESSAGES.len) then return Some(MESSAGES[usize(-code - 1)])
 
+    None
+
+// Say what an uncaught `THROW` was. `ABORT` and `QUIT` say nothing, as the standard has them; `ABORT"`
+// shows its own message; an undefined word is named; any other code the standard lists gets its
+// message, and one it does not is shown as a number.
 report(vm: *Vm)
     val code = vm.error
 
-    if code == E_ABORT || code == E_QUIT || code == E_ABORTQ then return
+    if code == E_ABORT || code == E_QUIT then return
 
-    if code == E_UNDEFINED
+    if code == E_ABORTQ
+        vm.con.send(byte_at(vm.abort_msg)[0..<vm.abort_len])
+        return
+
+    if code == E_UNDEFINED && vm.missing_len > 0
         vm.con.send(vm.missing[0..<vm.missing_len])
         vm.con.send(" ?\n".bytes)
         return
 
-    vm.con.send(describe(code).bytes)
+    describe(code) match
+        Some(text) -> vm.con.send(text.bytes)
+        None ->
+            val base = vm.base
+
+            // The picture stops at a fault, so the fault being reported is set aside while it is drawn.
+            vm.error = 0
+            vm.base = 10
+
+            val digits = picture(vm, magnitude_of(code), code < 0)
+
+            vm.base = base
+            vm.error = code
+            vm.con.send("uncaught exception ".bytes)
+            vm.con.send(digits)
+
     vm.con.emit(10)
 
 // Back to a state the outer interpreter can go on from. An unfinished definition is taken back out
@@ -383,6 +476,8 @@ recover(vm: *Vm)
     vm.rp = vm.r0
     vm.state = 0
     vm.error = 0
+    vm.missing_len = 0
+    vm.abort_len = 0
 
 // Read a line into the terminal input buffer and make it the input source. False at the end.
 refill_console(vm: *Vm) -> bool
@@ -398,18 +493,21 @@ refill_console(vm: *Vm) -> bool
 
 // Interpret the current input source to its end, as the outer loop does with each line: a fault is
 // reported and recovered from. Answers what happened -- 0 for a line that ran to its end, `E_BYE`,
-// or the fault's code -- so a front end can say ` ok` or not.
+// or the fault's code -- so a front end can say ` ok` or not. A program may `THROW` any number, the
+// one `E_BYE` is too, so a thrown `E_BYE` is answered as `E_ABORT`: only `BYE` itself ends the program.
 interpret_source(vm: *Vm) -> isize
     interpret(vm)
 
     val code = vm.error
 
-    if code == E_BYE then return code
+    if vm.bye then return E_BYE
 
     if code != 0
         vm.faults += 1
         report(vm)
         recover(vm)
+
+        if code == E_BYE then return E_ABORT
 
     code
 end interpret_source

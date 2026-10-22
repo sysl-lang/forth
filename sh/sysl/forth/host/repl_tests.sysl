@@ -61,6 +61,23 @@ repl_error_then_a_working_line()
     assert(r.text.contains("\r\n0 5  ok\r\n"), r.text)
     assert(count(r.text, " ok") == 2, r.text)
 
+@test("an uncaught THROW shows the standard message without ok, and the REPL goes on")
+repl_uncaught_throw()
+    val r = repl_of("-10 THROW\r: T 77 THROW ; T\r1 THROW\r5 .\r")
+
+    assert(r.text.contains("\r\ndivision by zero\r\n"), r.text)
+    assert(r.text.contains("\r\nuncaught exception 77\r\n"), r.text)
+    assert(r.text.contains("\r\nuncaught exception 1\r\n"), r.text)
+    assert(r.text.contains("\r\n5  ok\r\n"), r.text)
+    assert(count(r.text, " ok") == 1, r.text)
+    assert(r.ended == Ended.EndOfInput, "a thrown 1 is not BYE")
+
+@test("a caught THROW is answered with ok like any line")
+repl_caught_throw()
+    val r = repl_of(": T 77 THROW ; ' T CATCH .\r")
+
+    assert(r.text.contains("\r\n77  ok\r\n"), r.text)
+
 @test("an error inside a definition takes the definition back out, and the next line starts fresh")
 repl_error_while_compiling()
     val r = repl_of(": BAD 1\rNOPE\rBAD\r2 .\r")

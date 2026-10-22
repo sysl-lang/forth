@@ -213,7 +213,7 @@ fault_dictionary_full()
     evaluate(&vm, "1000000000 ALLOT".bytes)
     assert(vm.error == E_DICTFULL, "dictionary full")
     assert(vm.here == here, "HERE stayed")
-    assert(says("1000000000 ALLOT\n: X 1 ; X .", "dictionary full\n1 "), "reported, and the machine goes on")
+    assert(says("1000000000 ALLOT\n: X 1 ; X .", "dictionary overflow\n1 "), "reported, and the machine goes on")
 
 @test("a definition that does not fit is taken back out")
 fault_dictionary_full_while_compiling()
@@ -377,6 +377,70 @@ forth2012_core_ext()
     assert(failed == 0, "none failed")
     assert(total == 0, "and none before it")
     assert(vm.faults == 0, "no line faulted")
+
+@test("the Forth 2012 suite's Exception tests all pass")
+forth2012_exception()
+    before_word_sets()
+    also(embed("../../../tests/exceptiontest.fth"))
+
+    val (tests, failed, total) = tally_set("#TESTS @ ERRORS[] EXCEPTION-ERRORS + @ TOTAL-ERRORS @")
+
+    assert(tests == 9, "every test in exceptiontest.fth ran")
+    assert(failed == 0, "none failed")
+    assert(total == 0, "and none before it")
+    assert(vm.faults == 0, "no line faulted")
+
+// ---------------------------------------------------------------------------------------------------
+// CATCH and THROW.
+
+@test("THROW from nested definitions comes back to CATCH with both stacks as CATCH left them")
+catch_nested()
+    start("".bytes)
+
+    val rp = vm.rp
+
+    evaluate(&vm, ": A 5 6 7 >R >R 42 THROW ; : B 1 >R 2 A R> ; : C 3 >R ['] B CATCH R> ; 9 C".bytes)
+    assert(vm.error == 0, "caught")
+    assert(vm.rp == rp, "the return stack is back")
+    assert(depth_of(&vm) == 3 && pop(&vm) == 3 && pop(&vm) == 42 && pop(&vm) == 9, "9 42 3")
+
+@test("THROW inside EXECUTE, inside a DO loop, is caught and the loop around CATCH goes on")
+catch_execute_in_loop()
+    assert(says(": T 2 = IF 7 THROW THEN ; : L 4 0 DO I ['] T ['] EXECUTE CATCH . LOOP ; L DEPTH .", "0 0 7 0 2 "), "loop")
+    assert(says(": T ['] DUP EXECUTE THROW ; 7 ' T CATCH . .", "7 7 "), "inner EXECUTE of a primitive")
+
+@test("CATCH catches the faults the machine raises, with their codes")
+catch_faults()
+    assert(says(": U DROP ; ' U CATCH .", "-4 "), "stack underflow")
+    assert(says(": Z 1 0 / ; ' Z CATCH .", "-10 "), "division by zero")
+    assert(says(": N S\" FROB\" EVALUATE ; ' N CATCH . SOURCE-ID .", "-13 0 "), "undefined, with the source put back")
+    assert(says(": R RECURSE ; ' R CATCH . 1 .", "-5 1 "), "return stack overflow")
+
+@test("0 THROW does nothing and CATCH answers 0 when nothing is thrown")
+catch_nothing()
+    assert(says("1 2 ' + CATCH . . 0 THROW 7 .", "0 3 7 "), "nothing")
+    assert(says("THROW", "stack underflow\n"), "THROW wants its code")
+
+@test("an uncaught THROW shows the standard message, or the code, and the machine goes on")
+catch_uncaught()
+    assert(says("-9 THROW\n-28 THROW\n42 THROW\n-300 THROW\n1 2 + .", "invalid memory address\nuser interrupt\nuncaught exception 42\nuncaught exception -300\n3 "), "messages")
+    assert(says("-13 THROW\n5 .", "undefined word\n5 "), "-13 with no name to show")
+    assert(says("1 2 -1 THROW\nDEPTH .", "0 "), "-1 is ABORT: silent, stack emptied")
+
+@test("ABORT and ABORT\" are THROWs: caught they say nothing, uncaught ABORT\" shows its message")
+catch_abort()
+    assert(says(": A ABORT ; ' A CATCH .", "-1 "), "ABORT")
+    assert(says(": Q ABORT\" no\" ; 1 ' Q CATCH . 0 ' Q CATCH .", "-2 0 "), "ABORT\" caught")
+    assert(says(": Q ABORT\" gone\" ; 1 Q\n-2 THROW\n5 .", "gone5 "), "ABORT\" uncaught, and a bare -2 says nothing")
+
+@test("BYE goes through CATCH, and a thrown 1 does not end the program")
+catch_bye()
+    start(": B BYE ; ' B CATCH 9 .\n2 .".bytes)
+    assert(quit(&vm), "BYE was seen")
+    assert(written(&con) == "".bytes, "CATCH let it through")
+    start("".bytes)
+    assert(interpret_line(&vm, "1 THROW".bytes) == E_ABORT, "a thrown 1 is a fault")
+    assert(interpret_line(&vm, "BYE".bytes) == E_BYE, "BYE is BYE")
 
 // ---------------------------------------------------------------------------------------------------
 // The Core Extension words, where the suite does not reach.

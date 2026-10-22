@@ -15,6 +15,9 @@ boot(vm: *Vm, lo: usize, size: usize, con: *Console)
     reset_stacks(vm)
     vm.error = 0
     vm.faults = 0
+    vm.bye = false
+    vm.abort_len = 0
+    vm.missing_len = 0
     vm.state = 0
     vm.base = 10
     vm.to_in = 0
@@ -231,6 +234,10 @@ define_words(vm: *Vm)
     slow(vm, "ABORT", &w_abort)
     slow(vm, "QUIT", &w_quit)
     slow(vm, "BYE", &w_bye)
+
+    // The Exception words.
+    slow(vm, "CATCH", &w_catch)
+    prim(vm, "THROW", &p_throw)
 
     // The Core Extension words not already above.
     prim(vm, "2>R", &p_2tor)

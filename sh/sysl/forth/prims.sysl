@@ -52,8 +52,6 @@ rs_underflow(vm: *Vm, ip: *usize, sp: *isize, tos: isize) = fault(vm, sp, tos, E
 
 divide_by_zero(vm: *Vm, ip: *usize, sp: *isize, tos: isize) = fault(vm, sp, tos, E_DIVZERO)
 
-aborted(vm: *Vm, ip: *usize, sp: *isize, tos: isize) = fault(vm, sp, tos, E_ABORTQ)
-
 // Start a thread at `ip`, and come back when it halts or faults.
 run(vm: *Vm, ip: *usize)
     val f: Code = ptr_cast(ip[0])
@@ -282,7 +280,8 @@ p_dotq(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 
     become next(vm, thread_at(aligned(at + len)), sp, tos)
 
-// `ABORT"`'s run-time half: given a true flag, show the inline string and abort.
+// `ABORT"`'s run-time half: given a true flag, `-2 THROW`, with the inline string as the message the
+// outer interpreter shows if nothing catches it.
 p_abortq(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
 
@@ -290,9 +289,10 @@ p_abortq(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     val at = usize(&ip[1])
 
     if tos != 0
-        vm.con.send(byte_at(at)[0..<len])
+        vm.abort_msg = at
+        vm.abort_len = len
 
-        become aborted(vm, ip, &sp[-1], sp[0])
+        become p_throw(vm, ip, sp, E_ABORTQ)
 
     become next(vm, thread_at(aligned(at + len)), &sp[-1], sp[0])
 

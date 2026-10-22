@@ -1,0 +1,59 @@
+module sh.sysl.forth
+@no_alloc
+
+// The Exception word set: `CATCH` and `THROW`.
+//
+// **A `THROW` is a fault, and every fault is a `THROW`.** A thread stops on a fault by returning
+// instead of jumping, which lands in the `run` that started it with the code in `vm.error`; every
+// sysl word checks `vm.error` after whatever it called. So `THROW` only has to record its code and
+// return, and the stack underflow a primitive detects, the undefined word the text interpreter meets
+// and the `-1` of `ABORT` all travel the same way.
+//
+// **`CATCH` is the `run` they land in.** It notes the data stack's depth, the return stack pointer and
+// the input source, then runs its token in a thread of its own. A `THROW` anywhere beneath it, however
+// many colon definitions, `EXECUTE`s and `EVALUATE`s deep, returns through every sysl frame between
+// to that `run`; `CATCH` takes the code out of `vm.error`, puts the three back and answers the code.
+// Nothing catches `BYE`.
+
+// `THROW` from sysl: stop with `code`, which the nearest `CATCH` answers. 0 does nothing.
+throw(vm: *Vm, code: isize)
+    if code != 0 then fail(vm, code)
+
+// `THROW` ( k*x n -- k*x | i*x n ).
+p_throw(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
+
+    if tos == 0 then become next(vm, ip, &sp[-1], sp[0])
+
+    fault(vm, &sp[-1], sp[0], tos)
+
+// `CATCH` ( i*x xt -- j*x 0 | i*x n ).
+w_catch(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val xt = usize(pop(vm))
+    val depth = depth_of(vm)
+    val rp = vm.rp
+    val src = vm.src
+    val src_len = vm.src_len
+    val to_in = vm.to_in
+    val src_id = vm.src_id
+
+    execute(vm, xt)
+
+    val code = vm.error
+
+    if code == 0 then return push(vm, 0)
+
+    if vm.bye then return
+
+    vm.error = 0
+    vm.missing_len = 0
+    vm.abort_len = 0
+    set_depth(vm, depth)
+    vm.rp = rp
+    vm.src = src
+    vm.src_len = src_len
+    vm.to_in = to_in
+    vm.src_id = src_id
+    push(vm, code)

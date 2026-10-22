@@ -522,11 +522,14 @@ w_roll(vm: *Vm)
     vm.sp[0] = vm.tos
     vm.tos = x
 
-w_abort(vm: *Vm) = fail(vm, E_ABORT)
+// `ABORT` is `-1 THROW`.
+w_abort(vm: *Vm) = throw(vm, E_ABORT)
 
 w_quit(vm: *Vm) = fail(vm, E_QUIT)
 
-w_bye(vm: *Vm) = fail(vm, E_BYE)
+w_bye(vm: *Vm)
+    vm.bye = true
+    fail(vm, E_BYE)
 
 // ---------------------------------------------------------------------------------------------------
 // Double-cell arithmetic.
