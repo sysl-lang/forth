@@ -390,6 +390,48 @@ forth2012_exception()
     assert(total == 0, "and none before it")
     assert(vm.faults == 0, "no line faulted")
 
+@test("the Forth 2012 suite's String tests all pass")
+forth2012_string()
+    before_word_sets()
+    also(embed("../../../tests/stringtest.fth"))
+
+    val (tests, failed, total) = tally_set("#TESTS @ ERRORS[] STRING-ERRORS + @ TOTAL-ERRORS @")
+
+    assert(tests == 135, "every test in stringtest.fth ran")
+    assert(failed == 0, "none failed")
+    assert(total == 0, "and none before it")
+    assert(vm.faults == 0, "no line faulted")
+
+// ---------------------------------------------------------------------------------------------------
+// The String words, where the suite does not reach.
+
+@test("SEARCH for a pattern longer than the string, or absent, answers the string and false")
+string_search_misses()
+    assert(says("S\" ab\" S\" abc\" SEARCH . . DROP", "0 2 "), "longer")
+    assert(says(": T S\" hello\" S\" lo\" SEARCH . TYPE ; T", "-1 lo"), "found at the end")
+
+@test("a marker takes back the substitutions defined after it")
+string_marker_trims_substitutions()
+    start("".bytes)
+    evaluate(&vm, ": X S\" one\" S\" a\" REPLACES ; X MARKER M : Y S\" two\" S\" a\" REPLACES ; Y".bytes)
+    assert(subst_text(substitution(&vm, "A".bytes)) == "two".bytes, "the newest wins, whatever the case")
+    evaluate(&vm, "M".bytes)
+    assert(vm.error == 0 && subst_text(substitution(&vm, "a".bytes)) == "one".bytes, "and the marker takes it back")
+
+@test("SUBSTITUTE that does not fit answers -78, and a long overlapping source is refused")
+string_substitute_errors()
+    assert(says("CREATE B 600 ALLOT : T S\" %a%\" S\" xxxx\" ROT ROT REPLACES ; S\" xxxx\" S\" a\" REPLACES S\" %a%\" B 3 SUBSTITUTE . 2DROP", "-78 "), "too long")
+    assert(says("CREATE B 600 ALLOT B 300 B 1+ 300 SUBSTITUTE . 2DROP", "-78 "), "overlapping and longer than a line")
+    assert(says("CREATE B 64 ALLOT S\" a%%b\" B SWAP CMOVE B 4 B 2 + 10 SUBSTITUTE . TYPE", "0 a%b"), "overlapping and short is copied aside")
+
+@test("UNESCAPE doubles every percent sign")
+string_unescape()
+    assert(says("CREATE B 16 ALLOT S\" %a%\" B UNESCAPE TYPE", "%%a%%"), "doubled")
+
+@test("2VARIABLE holds two cells, both 0 to start")
+string_2variable()
+    assert(says("2VARIABLE V V 2@ . . 1 2 V 2! V 2@ . .", "0 0 2 1 "), "two cells")
+
 // ---------------------------------------------------------------------------------------------------
 // CATCH and THROW.
 

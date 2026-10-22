@@ -31,6 +31,7 @@ boot(vm: *Vm, lo: usize, size: usize, con: *Console)
     vm.latest_xt = 0
     vm.def_start = 0
     vm.sidx = 0
+    vm.subst = 0
     boot_ext(vm)
     define_words(vm)
 
@@ -238,6 +239,21 @@ define_words(vm: *Vm)
     // The Exception words.
     slow(vm, "CATCH", &w_catch)
     prim(vm, "THROW", &p_throw)
+
+    // The String words, and 2VARIABLE from the Double-Number words.
+    slow(vm, "COMPARE", &w_compare)
+    slow(vm, "SEARCH", &w_search)
+    slow(vm, "-TRAILING", &w_dash_trailing)
+    slow(vm, "/STRING", &w_slash_string)
+    slow(vm, "CMOVE", &w_cmove)
+    slow(vm, "CMOVE>", &w_cmove_up)
+    slow(vm, "BLANK", &w_blank)
+    slow(vm, "SLITERAL", &w_sliteral)
+    immediate(vm)
+    slow(vm, "REPLACES", &w_replaces)
+    slow(vm, "SUBSTITUTE", &w_substitute)
+    slow(vm, "UNESCAPE", &w_unescape)
+    slow(vm, "2VARIABLE", &w_2variable)
 
     // The Core Extension words not already above.
     prim(vm, "2>R", &p_2tor)

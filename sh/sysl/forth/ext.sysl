@@ -106,6 +106,7 @@ w_marker_restore(vm: *Vm)
     vm.here = usize(cell_at(body)[0])
     vm.latest = usize(cell_at(body + CELL)[0])
     vm.latest_xt = if vm.latest == 0 then 0 else xt_of(vm.latest)
+    trim_substitutions(vm)
 
 // Lay down the two threads and the token a new deferred word starts with.
 boot_ext(vm: *Vm)

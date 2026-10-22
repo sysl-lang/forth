@@ -1,0 +1,287 @@
+module sh.sysl.forth
+@no_alloc
+
+// The String word set, and `2VARIABLE` from the Double-Number word set, which the suite's String tests
+// use.
+//
+// **A substitution `REPLACES` defines lives in the dictionary**, since nothing here allocates: a link
+// to the one defined before it, the name's length, the text's length, then the name and the text.
+// `vm.subst` is the newest, so a name defined again is found at its newest text. Taking the
+// dictionary back -- a marker, or a fault inside a definition -- drops any defined above the new
+// `HERE`.
+
+// A string from an address and a length, an empty one for a length that is not positive.
+text_at(a: usize, n: isize) -> []const u8 = if n > 0 then byte_at(a)[0..<usize(n)] else byte_at(a)[0..<0]
+
+// Pop a string's address and length.
+pop_text(vm: *Vm) -> []const u8
+    val n = pop(vm)
+    val a = usize(pop(vm))
+
+    text_at(a, n)
+
+// ---------------------------------------------------------------------------------------------------
+// Comparing and searching.
+
+// `COMPARE` ( c-addr1 u1 c-addr2 u2 -- n ): -1, 0 or 1 as the first string sorts before, with or after
+// the second, byte by byte and then by length.
+w_compare(vm: *Vm)
+    if !need(vm, 4) then return
+
+    val b = pop_text(vm)
+    val a = pop_text(vm)
+    val n = if a.len < b.len then a.len else b.len
+
+    for i in 0..<n
+        if a[i] != b[i] then return push(vm, if a[i] < b[i] then -1 else 1)
+
+    push(vm, if a.len < b.len then -1 else if a.len > b.len then 1 else 0)
+
+// `SEARCH` ( c-addr1 u1 c-addr2 u2 -- c-addr3 u3 flag ): the first string from where the second
+// first occurs in it, and true; or the first string whole, and false.
+w_search(vm: *Vm)
+    if !need(vm, 4) then return
+
+    val pattern = pop_text(vm)
+    val len = pop(vm)
+    val at = usize(pop(vm))
+    val s = text_at(at, len)
+
+    if pattern.len <= s.len
+        for i in 0..<s.len - pattern.len + 1
+            if s[i..<i + pattern.len] == pattern
+                push(vm, isize(at + i))
+                push(vm, isize(s.len - i))
+                return push(vm, -1)
+
+    push(vm, isize(at))
+    push(vm, len)
+    push(vm, 0)
+
+// `-TRAILING` ( c-addr u1 -- c-addr u2 ): without its trailing spaces.
+w_dash_trailing(vm: *Vm)
+    if !need(vm, 2) then return
+
+    var n = pop(vm)
+    val at = usize(vm.tos)
+
+    while n > 0 && byte_at(at)[usize(n - 1)] == 32
+        n -= 1
+
+    push(vm, n)
+
+// `/STRING` ( c-addr1 u1 n -- c-addr2 u2 ): `n` characters taken off the front.
+w_slash_string(vm: *Vm)
+    if !need(vm, 3) then return
+
+    val n = pop(vm)
+    val len = pop(vm)
+    val at = pop(vm)
+
+    push(vm, at + n)
+    push(vm, len - n)
+
+// ---------------------------------------------------------------------------------------------------
+// Moving and filling.
+
+// `CMOVE` ( c-addr1 c-addr2 u -- ): byte by byte from the lowest address up, so a copy to a higher
+// address that overlaps its source repeats the source's start.
+w_cmove(vm: *Vm)
+    if !need(vm, 3) then return
+
+    val n = pop(vm)
+    val to = byte_at(usize(pop(vm)))
+    val from = byte_at(usize(pop(vm)))
+    var i: isize = 0
+
+    while i < n
+        to[i] = from[i]
+        i += 1
+
+// `CMOVE>` ( c-addr1 c-addr2 u -- ): byte by byte from the highest address down.
+w_cmove_up(vm: *Vm)
+    if !need(vm, 3) then return
+
+    var i = pop(vm)
+    val to = byte_at(usize(pop(vm)))
+    val from = byte_at(usize(pop(vm)))
+
+    while i > 0
+        i -= 1
+        to[i] = from[i]
+
+// `BLANK` ( c-addr u -- ): fill with spaces.
+w_blank(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val n = pop(vm)
+    val at = byte_at(usize(pop(vm)))
+    var i: isize = 0
+
+    while i < n
+        at[i] = 32
+        i += 1
+
+// `SLITERAL` ( c-addr u -- ) compiling: compile the string, so that the definition pushes its own copy.
+w_sliteral(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val s = pop_text(vm)
+
+    compile_code(vm, &p_slit)
+    compile_string(vm, s)
+
+// ---------------------------------------------------------------------------------------------------
+// Substitution.
+
+// The parts of a substitution.
+subst_name(e: usize) -> []const u8 = byte_at(e + 3 * CELL)[0..<usize(cell_at(e + CELL)[0])]
+
+subst_text(e: usize) -> []const u8 = byte_at(e + 3 * CELL + usize(cell_at(e + CELL)[0]))[0..<usize(cell_at(e + 2 * CELL)[0])]
+
+// The newest substitution named `name`, whatever the case of either, or 0.
+substitution(vm: *Vm, name: []const u8) -> usize
+    var e = vm.subst
+
+    while e != 0
+        if same_name(subst_name(e), name) then return e
+
+        e = link_of(e)
+
+    0
+
+// Forget the substitutions above `HERE`, after the dictionary has been taken back.
+trim_substitutions(vm: *Vm)
+    while vm.subst >= vm.here && vm.subst != 0
+        vm.subst = link_of(vm.subst)
+
+// `REPLACES` ( c-addr1 u1 c-addr2 u2 -- ): the string `c-addr1 u1` is what `%name%` stands for in
+// `SUBSTITUTE`, the name being `c-addr2 u2`.
+w_replaces(vm: *Vm)
+    if !need(vm, 4) then return
+
+    val name = pop_text(vm)
+    val text = pop_text(vm)
+
+    align_here(vm)
+
+    if !reserve(vm, 3 * CELL + name.len + text.len) then return
+
+    val e = vm.here
+
+    comma_u(vm, vm.subst)
+    comma_u(vm, name.len)
+    comma_u(vm, text.len)
+
+    for b in name
+        ccomma(vm, b)
+
+    for b in text
+        ccomma(vm, b)
+
+    align_here(vm)
+    vm.subst = e
+
+// Append `part` to `out` at `at`; false when it does not fit.
+put(out: []u8, at: *usize, part: []const u8) -> bool
+    if out.len - at[0] < part.len then return false
+
+    for b in part
+        out[at[0]] = b
+        at[0] += 1
+
+    true
+
+// `SUBSTITUTE` ( c-addr1 u1 c-addr2 u2 -- c-addr2 u3 n ): the first string into the buffer `c-addr2 u2`,
+// each `%name%` replaced by the text `REPLACES` gave `name` and each `%%` by `%`, in one pass from the
+// left. `n` is how many were replaced, or -78 when the result does not fit. A name with no
+// substitution goes through with its delimiters, and so does a `%` with no partner.
+//
+// A source that overlaps the buffer is copied aside first, when it is no longer than a line; a longer
+// one is refused with -78, as the standard allows.
+w_substitute(vm: *Vm)
+    if !need(vm, 4) then return
+
+    val size = pop(vm)
+    val dest = usize(pop(vm))
+    val src = pop_text(vm)
+    val out = if size > 0 then byte_at(dest)[0..<usize(size)] else byte_at(dest)[0..<0]
+    var aside: [LINE_BYTES]u8 = [0; LINE_BYTES]
+    var s = src
+
+    if src.len > 0 && usize(&src[0]) < dest + out.len && dest < usize(&src[0]) + src.len
+        if src.len > LINE_BYTES
+            push(vm, isize(dest))
+            push(vm, 0)
+            return push(vm, E_SUBSTITUTE)
+
+        for i in 0..<src.len
+            aside[i] = src[i]
+
+        s = aside[0..<src.len]
+
+    var at: usize = 0
+    var count: isize = 0
+    var fits = true
+    var i: usize = 0
+
+    while i < s.len && fits
+        if s[i] != u8('%')
+            fits = put(out, &at, s[i..<i + 1])
+            i += 1
+        else
+            var j = i + 1
+
+            while j < s.len && s[j] != u8('%')
+                j += 1
+
+            if j >= s.len
+                fits = put(out, &at, s[i..])
+                i = s.len
+            else
+                val e = if j == i + 1 then 0 else substitution(vm, s[i + 1..<j])
+
+                if j == i + 1
+                    fits = put(out, &at, s[i..<i + 1])
+                else if e != 0
+                    fits = put(out, &at, subst_text(e))
+                    count += 1
+                else
+                    fits = put(out, &at, s[i..<j + 1])
+
+                i = j + 1
+
+    push(vm, isize(dest))
+    push(vm, if fits then isize(at) else 0)
+    push(vm, if fits then count else E_SUBSTITUTE)
+
+// `UNESCAPE` ( c-addr1 u1 c-addr2 -- c-addr2 u2 ): the string copied to `c-addr2` with every `%`
+// doubled, so that `SUBSTITUTE` gives it back unchanged.
+w_unescape(vm: *Vm)
+    if !need(vm, 3) then return
+
+    val dest = usize(pop(vm))
+    val s = pop_text(vm)
+    val out = byte_at(dest)
+    var n: usize = 0
+
+    for b in s
+        out[n] = b
+        n += 1
+
+        if b == u8('%')
+            out[n] = b
+            n += 1
+
+    push(vm, isize(dest))
+    push(vm, isize(n))
+
+// ---------------------------------------------------------------------------------------------------
+// From the Double-Number word set.
+
+// `2VARIABLE` ( "name" -- ): a word that answers the address of two cells, both 0.
+w_2variable(vm: *Vm)
+    if !header(vm, parse_name(vm), &dovar) then return
+
+    comma(vm, 0)
+    comma(vm, 0)

@@ -59,7 +59,7 @@ input never starts the REPL: `forth < file.fs` reads the file as it always has, 
 
 ## The words
 
-187 of them:
+199 of them:
 
 - **Stack:** `DUP ?DUP DROP SWAP OVER ROT NIP TUCK 2DUP 2DROP 2SWAP 2OVER >R R> R@ DEPTH PICK ROLL`
 - **Arithmetic and logic:** `+ - * / MOD /MOD */ */MOD AND OR XOR INVERT NEGATE ABS 1+ 1- 2* 2/
@@ -79,6 +79,8 @@ input never starts the REPL: `forth < file.fs` reads the file as it always has, 
 - **Core Extension, beyond the above:** `2>R 2R> 2R@ WITHIN VALUE TO DEFER IS DEFER@ DEFER!
   ACTION-OF MARKER BUFFER: [COMPILE] CASE OF ENDOF ENDCASE C" S\" PAD ERASE UNUSED SAVE-INPUT
   RESTORE-INPUT .R U.R HOLDS`
+- **String, and `2VARIABLE` from the Double-Number words:** `COMPARE SEARCH -TRAILING /STRING CMOVE
+  CMOVE> BLANK SLITERAL REPLACES SUBSTITUTE UNESCAPE 2VARIABLE`
 
 The text interpreter also reads `#123`, `$FF`, `%101` and `'c'`, Forth 2012's number prefixes.
 
@@ -184,7 +186,7 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
 
 ## Tests
 
-`sysl test .` runs 68 tests:
+`sysl test .` runs 74 tests:
 
 - **The Hayes Core tests: 638 of 638 pass.** `tests/tester.fr` and `tests/core.fr` are John Hayes's
   files from [gerryjackson/forth2012-test-suite](https://github.com/gerryjackson/forth2012-test-suite)
@@ -203,6 +205,7 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
   | `tests/coreplustest.fth` | `src/coreplustest.fth` | `d967d1d367b3c0bf91b13944694fb5ac26fa793a63be3ea58bf50779971ef47b` | 101 | 0 |
   | `tests/coreexttest.fth` | `src/coreexttest.fth` | `f35b9a78ac463985e2cfa616f19893204e25f5a51f0512324d8d45fe9e73b71b` | 383 | 0 |
   | `tests/exceptiontest.fth` | `src/exceptiontest.fth` | `92bce976b74a799f0a7c9f4200e46832eea6371d117e522dea4550a6fe067083` | 9 | 0 |
+  | `tests/stringtest.fth` | `src/stringtest.fth` | `6f78aafab33acf2c3e09ec428447d539e2f8afe71fa3ca2ed329b2999b129cde` | 135 | 0 |
 
   The suite's helpers, loaded before the word-set files as its own `runtests.fth` loads them:
   `tests/utilities.fth` (`src/utilities.fth`,

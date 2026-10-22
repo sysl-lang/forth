@@ -72,6 +72,7 @@ const E_UNSUPPORTED: isize = -21
 const E_CONTROL: isize = -22
 const E_RANGE: isize = -24
 const E_QUIT: isize = -56
+const E_SUBSTITUTE: isize = -78
 // What `interpret_source` answers when `BYE` asked the host to end the program. `BYE` stops the
 // threads as a fault does, with this code and `Vm.bye` set, and no `CATCH` catches it.
 const E_BYE: isize = 1
@@ -141,6 +142,9 @@ struct Vm
 
     // `COMPILE,`, which `POSTPONE` compiles a call to.
     xt_compile: usize
+
+    // The newest substitution `REPLACES` defined, 0 for none.
+    subst: usize
 
     // The threads a deferred word and a marker run, and the token a deferred word starts with.
     defer_does: usize

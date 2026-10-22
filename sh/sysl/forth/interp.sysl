@@ -468,6 +468,7 @@ recover(vm: *Vm)
             vm.latest_xt = vm.def_xt
 
         vm.def_start = 0
+        trim_substitutions(vm)
 
     if vm.error != E_QUIT
         vm.sp = vm.s0
