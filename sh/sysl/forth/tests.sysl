@@ -345,3 +345,81 @@ forth2012_core_plus()
     assert(tests == 101, "every test in coreplustest.fth ran")
     assert(failed == 0, "none failed")
     assert(vm.faults == 0, "no line faulted")
+
+// A machine that has run everything the word-set files assume: the tester, the Core tests, the
+// additional Core tests, and the suite's utilities and error report, then the counting `T{`.
+before_word_sets()
+    after_core()
+    also(embed("../../../tests/coreplustest.fth"))
+    also(embed("../../../tests/utilities.fth"))
+    also(embed("../../../tests/errorreport.fth"))
+    also(embed("../../../tests/count.fs"))
+
+// The tests counted, the errors the file recorded for its word set with `SET-ERROR-COUNT`, and the
+// errors of every file run, all read by `query`.
+tally_set(query: string) -> (isize, isize, isize)
+    evaluate(&vm, query.bytes)
+    assert(vm.error == 0, "the counters are there")
+
+    val total = pop(&vm)
+    val failed = pop(&vm)
+
+    (pop(&vm), failed, total)
+
+@test("the Forth 2012 suite's Core Extension tests all pass")
+forth2012_core_ext()
+    before_word_sets()
+    also(embed("../../../tests/coreexttest.fth"))
+
+    val (tests, failed, total) = tally_set("#TESTS @ ERRORS[] CORE-EXT-ERRORS + @ TOTAL-ERRORS @")
+
+    assert(tests == 383, "every test in coreexttest.fth ran")
+    assert(failed == 0, "none failed")
+    assert(total == 0, "and none before it")
+    assert(vm.faults == 0, "no line faulted")
+
+// ---------------------------------------------------------------------------------------------------
+// The Core Extension words, where the suite does not reach.
+
+@test("a deferred word with nothing in it faults, and IS fills it")
+ext_defer()
+    assert(says("DEFER D D\n' DUP IS D 3 D . .", "unsupported operation\n3 3 "), "unset, then set")
+
+@test("a marker takes back every word after it, and itself")
+ext_marker()
+    start("".bytes)
+
+    val here = vm.here
+    val latest = vm.latest
+
+    evaluate(&vm, "MARKER M : A 1 ; VARIABLE B M".bytes)
+    assert(vm.error == 0 && vm.here == here && vm.latest == latest, "all gone")
+    assert(find(&vm, "M".bytes) == 0 && find(&vm, "A".bytes) == 0, "the names too")
+
+@test("CASE drops the value when nothing matches, and OF wants two items")
+ext_case()
+    assert(says(": C CASE 1 OF 10 ENDOF 2 OF 20 ENDOF ENDCASE ; 5 C DEPTH . 2 C .", "0 20 "), "no match")
+    assert(says(": C CASE OF ENDOF ENDCASE ; 1 C", "stack underflow\n"), "OF with one item")
+
+@test("S\\\" and C\" interpret into the transient buffers too")
+ext_strings_interpreted()
+    assert(says("S\\\" a\\tb\\x41\" TYPE C\" xyz\" COUNT TYPE", "a\tbAxyz"), "interpreted")
+    assert(says(": Q S\\\" \\q\\\\\" TYPE ; Q", "\"\\"), "compiled")
+
+@test("RESTORE-INPUT refuses a record of another source")
+ext_restore_input()
+    assert(says("SAVE-INPUT S\" RESTORE-INPUT\" EVALUATE . DEPTH .", "-1 0 "), "another source")
+    assert(says("SAVE-INPUT 1 RESTORE-INPUT . 2DROP DROP", "-1 "), "a record of the wrong length")
+
+@test("the double return-stack words move two cells, and fault on too few")
+ext_two_r()
+    assert(says(": T 1 2 2>R 2R@ 2R> ; T . . . .", "2 1 2 1 "), "round trip")
+    assert(says(": T 2R> ; T", "return stack underflow\n"), "too few")
+
+@test(".R and U.R pad to the field and never cut")
+ext_dot_r()
+    assert(says("-12 5 .R 7 1 U.R 123 1 .R", "  -127123"), "fields")
+
+@test("BUFFER: of a negative size is refused")
+ext_buffer_negative()
+    assert(says("-1 BUFFER: B", "invalid numeric argument\n"), "negative")

@@ -218,14 +218,23 @@ w_ploop(vm: *Vm) = close_loop(vm, &p_ploop)
 
 // The next string up to a quote, compiled inline after `code`, or — interpreting `S"` — copied to a
 // transient buffer. There are two, used in turn, so that two strings can be in hand at once.
-w_squote(vm: *Vm)
-    val s = parse(vm, u8('"'))
+w_squote(vm: *Vm) = string_literal(vm, parse(vm, u8('"')))
 
+// A string literal: compiled inline to push its address and length, or pushed now from a transient
+// buffer.
+string_literal(vm: *Vm, s: []const u8)
     if vm.state != 0
         compile_code(vm, &p_slit)
         compile_string(vm, s)
         return
 
+    val at = transient(vm, s)
+
+    push(vm, isize(at))
+    push(vm, isize(if s.len > LINE_BYTES then LINE_BYTES else s.len))
+
+// Copy `s` to the next transient buffer, cut to fit, and answer the buffer's address.
+transient(vm: *Vm, s: []const u8) -> usize
     val which = usize(vm.sidx)
     val n = if s.len > LINE_BYTES then LINE_BYTES else s.len
 
@@ -234,8 +243,7 @@ w_squote(vm: *Vm)
     for i in 0..<n
         vm.sbuf[which][i] = s[i]
 
-    push(vm, isize(usize(&vm.sbuf[which][0])))
-    push(vm, isize(n))
+    usize(&vm.sbuf[which][0])
 
 w_dotquote(vm: *Vm)
     val s = parse(vm, u8('"'))
@@ -699,8 +707,8 @@ w_hold(vm: *Vm)
 w_sign(vm: *Vm)
     if need(vm, 1) && pop(vm) < 0 then hold_char(vm, u8('-'))
 
-// A number in the current base and a space, as `.` and `U.` show it.
-show(vm: *Vm, magnitude: UDCell, negative: bool)
+// A number's digits in the current base, with its sign, pictured in `hold`.
+picture(vm: *Vm, magnitude: UDCell, negative: bool) -> []const u8
     vm.hld = hold_end(vm)
 
     var ud = sharp(vm, magnitude)
@@ -710,18 +718,41 @@ show(vm: *Vm, magnitude: UDCell, negative: bool)
 
     if negative then hold_char(vm, u8('-'))
 
+    byte_at(vm.hld)[0..<hold_end(vm) - vm.hld]
+
+// A number in the current base and a space, as `.` and `U.` show it.
+show(vm: *Vm, magnitude: UDCell, negative: bool)
+    val digits = picture(vm, magnitude, negative)
+
     if vm.error != 0 then return
 
-    vm.con.send(byte_at(vm.hld)[0..<hold_end(vm) - vm.hld])
+    vm.con.send(digits)
     vm.con.emit(32)
+
+// A number right-aligned in a field `width` wide, as `.R` and `U.R` show it. A number wider than the
+// field is shown whole.
+show_right(vm: *Vm, magnitude: UDCell, negative: bool, width: isize)
+    val digits = picture(vm, magnitude, negative)
+
+    if vm.error != 0 then return
+
+    var pad = width - isize(digits.len)
+
+    while pad > 0
+        vm.con.emit(32)
+        pad -= 1
+
+    vm.con.send(digits)
+
+// The magnitude of a signed cell, which for the most negative cell is one more than the largest.
+magnitude_of(n: isize) -> UDCell = if n < 0 then UDCell(usize(0 - n)) else UDCell(usize(n))
 
 w_dot(vm: *Vm)
     if !need(vm, 1) then return
 
     val n = pop(vm)
-    val magnitude = if n < 0 then UDCell(usize(0 - n)) else UDCell(usize(n))
 
-    show(vm, magnitude, n < 0)
+    show(vm, magnitude_of(n), n < 0)
 
 w_udot(vm: *Vm)
     if need(vm, 1) then show(vm, UDCell(usize(pop(vm))), false)
@@ -740,7 +771,7 @@ w_dots(vm: *Vm)
     for k in 1..<d + 1
         val x = if k == d then vm.tos else vm.s0[k + 1]
 
-        show(vm, if x < 0 then UDCell(usize(0 - x)) else UDCell(usize(x)), x < 0)
+        show(vm, magnitude_of(x), x < 0)
 
     vm.base = saved
 

@@ -342,6 +342,8 @@ describe(code: isize) -> string
     if code == E_ZERONAME then return "a name was expected"
     if code == E_NAMELEN then return "name too long"
     if code == E_CONTROL then return "unfinished control structure"
+    if code == E_UNSUPPORTED then return "unsupported operation"
+    if code == E_RANGE then return "invalid numeric argument"
     if code == E_COMPILEONLY then return "interpreting a compile-only word"
 
     "error"

@@ -1,0 +1,420 @@
+module sh.sysl.forth
+@no_alloc
+
+// The Core Extension word set: the words Forth 2012 lists beside Core that are not already there.
+//
+// **Three of them are made with `DOES>`'s machinery.** A word made by `DEFER` or `MARKER` has `dodoes`
+// as its code, like any word whose defining word used `DOES>`, and its `does` cell points at a short
+// thread laid down once when the machine boots: `@ EXECUTE` for a deferred word, and a call to the
+// sysl function that takes the dictionary back for a marker. So neither needs a code of its own, and
+// `takes_operand` stays the five codes it was.
+
+// ---------------------------------------------------------------------------------------------------
+// Primitives.
+
+// `2>R` ( x1 x2 -- ) ( R: -- x1 x2 ).
+p_2tor(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    val rp = vm.rp
+
+    if vm.rlim - rp <= 2 then become rs_overflow(vm, ip, sp, tos)
+
+    rp[1] = sp[0]
+    rp[2] = tos
+    vm.rp = &rp[2]
+
+    become next(vm, ip, &sp[-2], sp[-1])
+
+// `2R>` ( -- x1 x2 ) ( R: x1 x2 -- ).
+p_2rfrom(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    val rp = vm.rp
+
+    if rp - vm.r0 < 2 then become rs_underflow(vm, ip, sp, tos)
+    if vm.slim - sp < 2 then become overflow(vm, ip, sp, tos)
+
+    sp[1] = tos
+    sp[2] = rp[-1]
+    vm.rp = &rp[-2]
+
+    become next(vm, ip, &sp[2], rp[0])
+
+// `2R@` ( -- x1 x2 ) ( R: x1 x2 -- x1 x2 ).
+p_2rfetch(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    val rp = vm.rp
+
+    if rp - vm.r0 < 2 then become rs_underflow(vm, ip, sp, tos)
+    if vm.slim - sp < 2 then become overflow(vm, ip, sp, tos)
+
+    sp[1] = tos
+    sp[2] = rp[-1]
+
+    become next(vm, ip, &sp[2], rp[0])
+
+// `WITHIN` ( n lo hi -- flag ): lo <= n < hi on the circle of cells, which is one unsigned comparison.
+p_within(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 3 then become underflow(vm, ip, sp, tos)
+
+    val inside = usize(sp[-1] - sp[0]) < usize(tos - sp[0])
+
+    become next(vm, ip, &sp[-2], flag(inside))
+
+// `OF`'s run-time half: with the case value under the test value, go on past the operand with both
+// gone when they are equal, and to the operand with only the test value gone when they are not.
+p_of(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
+
+    if sp[0] == tos then become next(vm, &ip[1], &sp[-2], sp[-1])
+
+    become next(vm, thread_at(ip[0]), &sp[-1], sp[0])
+
+// `C"`'s run-time half: an inline counted string, its length cell first. Answers the count byte's
+// address.
+p_clit(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if vm.slim - sp <= 0 then become overflow(vm, ip, sp, tos)
+
+    val len = ip[0]
+    val at = usize(&ip[1])
+
+    sp[1] = tos
+
+    become next(vm, thread_at(aligned(at + len)), &sp[1], isize(at))
+
+// ---------------------------------------------------------------------------------------------------
+// The threads behind `DEFER` and `MARKER`, laid down when the machine boots.
+
+// A word written in sysl with no header: its token, for a thread to call.
+headless(vm: *Vm, word: *extern(*Vm) -> unit) -> usize
+    align_here(vm)
+
+    val xt = vm.here
+
+    compile_code(vm, &doslow)
+    comma(vm, 0)
+    comma_u(vm, usize(word))
+    xt
+
+// What a deferred word does before anything is put in it.
+w_defer_unset(vm: *Vm) = fail(vm, E_UNSUPPORTED)
+
+// A marker's run-time half, given its body: the dictionary as it was before the marker was made.
+w_marker_restore(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val body = usize(pop(vm))
+
+    vm.here = usize(cell_at(body)[0])
+    vm.latest = usize(cell_at(body + CELL)[0])
+    vm.latest_xt = if vm.latest == 0 then 0 else xt_of(vm.latest)
+
+// Lay down the two threads and the token a new deferred word starts with.
+boot_ext(vm: *Vm)
+    vm.defer_unset = headless(vm, &w_defer_unset)
+
+    val restore = headless(vm, &w_marker_restore)
+
+    vm.defer_does = vm.here
+    compile_code(vm, &p_fetch)
+    compile_code(vm, &p_execute)
+    compile_code(vm, &p_exit)
+    vm.marker_does = vm.here
+    compile_xt(vm, restore)
+    compile_code(vm, &p_exit)
+
+// Make the newest word run `thread` with its body's address, as `DOES>` would have.
+does_thread(vm: *Vm, thread: usize)
+    cell_at(vm.latest_xt)[0] = isize(usize(&dodoes))
+    cell_at(vm.latest_xt + CELL)[0] = isize(thread)
+
+// ---------------------------------------------------------------------------------------------------
+// Defining words.
+
+// `VALUE` ( x "name" -- ): a word that answers `x` until `TO` changes it.
+w_value(vm: *Vm) = w_constant(vm)
+
+// `TO` ( x "name" -- ) and `IS` ( xt "name" -- ): store into the body of a `VALUE` or a `DEFER`, now or
+// when the definition being compiled runs.
+w_to(vm: *Vm)
+    val xt = parse_xt(vm)
+
+    if vm.error != 0 then return
+
+    val body = xt + 2 * CELL
+
+    if vm.state != 0
+        compile_literal(vm, isize(body))
+        compile_code(vm, &p_store)
+        return
+
+    if need(vm, 1) then cell_at(body)[0] = pop(vm)
+
+// `DEFER` ( "name" -- ): a word that executes whatever token is put in it.
+w_defer(vm: *Vm)
+    if !header(vm, parse_name(vm), &dovar) then return
+
+    comma_u(vm, vm.defer_unset)
+    does_thread(vm, vm.defer_does)
+
+// `DEFER@` ( xt1 -- xt2 ) and `DEFER!` ( xt2 xt1 -- ).
+w_defer_fetch(vm: *Vm)
+    if need(vm, 1) then push(vm, cell_at(usize(pop(vm)) + 2 * CELL)[0])
+
+w_defer_store(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val xt = usize(pop(vm))
+
+    cell_at(xt + 2 * CELL)[0] = pop(vm)
+
+// `ACTION-OF` ( "name" -- xt ): what a deferred word executes, now or when the definition runs.
+w_action_of(vm: *Vm)
+    val xt = parse_xt(vm)
+
+    if vm.error != 0 then return
+
+    val body = xt + 2 * CELL
+
+    if vm.state != 0
+        compile_literal(vm, isize(body))
+        compile_code(vm, &p_fetch)
+        return
+
+    push(vm, cell_at(body)[0])
+
+// `MARKER` ( "name" -- ): a word that takes the dictionary back to how it was before the marker.
+w_marker(vm: *Vm)
+    val here = aligned(vm.here)
+    val latest = vm.latest
+
+    if !header(vm, parse_name(vm), &dovar) then return
+
+    comma_u(vm, here)
+    comma_u(vm, latest)
+    does_thread(vm, vm.marker_does)
+
+// `BUFFER:` ( u "name" -- ): a word that answers the address of `u` bytes of its own.
+w_buffer_colon(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val n = pop(vm)
+
+    if n < 0 then return fail(vm, E_RANGE)
+
+    if !header(vm, parse_name(vm), &dovar) then return
+
+    if reserve(vm, usize(n)) then vm.here += usize(n)
+
+// ---------------------------------------------------------------------------------------------------
+// The compiler.
+
+// `[COMPILE]` ( "name" -- ): compile the word, immediate or not.
+w_bracket_compile(vm: *Vm)
+    val xt = parse_xt(vm)
+
+    if vm.error == 0 then compile_xt(vm, xt)
+
+// `CASE ... OF ... ENDOF ... ENDCASE`. `CASE` leaves a 0 on the control-flow stack; each `OF` leaves
+// the branch that skips its clause, which `ENDOF` swaps for the branch to the end; `ENDCASE` resolves
+// every such branch down to the 0.
+w_case(vm: *Vm) = push(vm, 0)
+
+w_of(vm: *Vm) = push(vm, forward(vm, &p_of))
+
+w_endof(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val orig = pop(vm)
+
+    push(vm, forward(vm, &p_branch))
+    resolve(vm, orig)
+
+w_endcase(vm: *Vm)
+    compile_code(vm, &p_drop)
+
+    loop
+        if !need(vm, 1) then return
+
+        val orig = pop(vm)
+
+        if orig == 0 then return
+
+        resolve(vm, orig)
+
+// ---------------------------------------------------------------------------------------------------
+// Strings.
+
+// `C"` ( "ccc<quote>" -- ) compiling, ( -- c-addr ) running: a counted string. Interpreted, it is
+// copied to a transient buffer.
+w_cquote(vm: *Vm)
+    val s = parse(vm, u8('"'))
+    val n = if s.len > 255 then 255 else s.len
+
+    if vm.state != 0
+        compile_code(vm, &p_clit)
+        comma_u(vm, n + 1)
+        ccomma(vm, u8(n))
+
+        for i in 0..<n
+            ccomma(vm, s[i])
+
+        align_here(vm)
+        return
+
+    val which = usize(vm.sidx)
+
+    vm.sidx = 1 - vm.sidx
+    vm.sbuf[which][0] = u8(n)
+
+    for i in 0..<n
+        vm.sbuf[which][i + 1] = s[i]
+
+    push(vm, isize(usize(&vm.sbuf[which][0])))
+
+// The byte a one-letter escape in `S\"` names, or -1 for a letter that is not an escape.
+escape_byte(e: u8) -> isize
+    if e == u8('a') then return 7
+    if e == u8('b') then return 8
+    if e == u8('e') then return 27
+    if e == u8('f') then return 12
+    if e == u8('l') || e == u8('n') then return 10
+    if e == u8('q') || e == u8('"') then return 34
+    if e == u8('r') then return 13
+    if e == u8('t') then return 9
+    if e == u8('v') then return 11
+    if e == u8('z') then return 0
+    if e == u8('\\') then return 92
+
+    -1
+
+// A hexadecimal digit's value, or -1.
+hex_value(c: u8) -> isize
+    val d = digit_value(c)
+
+    if d < 16 then d else -1
+
+// `S\"`'s text: the source up to the next quote that is not escaped, each escape replaced by the bytes
+// it names, into `into`. Answers how many bytes; any that do not fit are dropped.
+parse_escaped(vm: *Vm, into: []u8) -> usize
+    val s = source_bytes(vm)
+    var i = usize(vm.to_in)
+    var n: usize = 0
+
+    if i > s.len then i = s.len
+
+    while i < s.len && s[i] != u8('"')
+        var b = isize(s[i])
+
+        i += 1
+
+        if b == isize(u8('\\')) && i < s.len
+            val e = s[i]
+
+            i += 1
+
+            if e == u8('m')
+                if n < into.len
+                    into[n] = 13
+                    n += 1
+
+                b = 10
+            else if e == u8('x') && i + 1 < s.len && hex_value(s[i]) >= 0 && hex_value(s[i + 1]) >= 0
+                b = hex_value(s[i]) * 16 + hex_value(s[i + 1])
+                i += 2
+            else
+                val named = escape_byte(e)
+
+                b = if named >= 0 then named else isize(e)
+
+        if n < into.len
+            into[n] = u8(b)
+            n += 1
+
+    vm.to_in = isize(if i < s.len then i + 1 else i)
+    n
+
+// `S\"` ( "ccc<quote>" -- ) compiling, ( -- c-addr u ) running: `S"` with escapes.
+w_sbackslashquote(vm: *Vm)
+    var text: [LINE_BYTES]u8 = [0; LINE_BYTES]
+    val n = parse_escaped(vm, text[..])
+
+    string_literal(vm, text[0..<n])
+
+// ---------------------------------------------------------------------------------------------------
+// Memory, input and output.
+
+w_pad(vm: *Vm) = push(vm, isize(usize(&vm.pad[0])))
+
+// `ERASE` ( addr u -- ).
+w_erase(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val n = pop(vm)
+    val at = usize(pop(vm))
+
+    for i in 0..<(if n > 0 then usize(n) else 0)
+        byte_at(at)[i] = 0
+
+w_unused(vm: *Vm) = push(vm, isize(if vm.hi > vm.here then vm.hi - vm.here else 0))
+
+// `SAVE-INPUT` ( -- x1 x2 x3 3 ) and `RESTORE-INPUT` ( x1 x2 x3 3 -- flag ): the input source and
+// where in it parsing is. Restoring answers false when it worked, and true for the record of another
+// source, which it cannot go back to.
+w_save_input(vm: *Vm)
+    push(vm, vm.to_in)
+    push(vm, isize(vm.src))
+    push(vm, vm.src_id)
+    push(vm, 3)
+
+w_restore_input(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val n = pop(vm)
+
+    if n != 3
+        if n < 0 || !need(vm, n) then return
+
+        var k = n
+
+        while k > 0
+            pop(vm)
+            k -= 1
+
+        return push(vm, -1)
+
+    if !need(vm, 3) then return
+
+    val src_id = pop(vm)
+    val src = usize(pop(vm))
+    val to_in = pop(vm)
+
+    if src != vm.src || src_id != vm.src_id then return push(vm, -1)
+
+    vm.to_in = to_in
+    push(vm, 0)
+
+// `.R` ( n width -- ) and `U.R` ( u width -- ).
+w_dot_r(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val width = pop(vm)
+    val n = pop(vm)
+
+    show_right(vm, magnitude_of(n), n < 0, width)
+
+w_u_dot_r(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val width = pop(vm)
+
+    show_right(vm, UDCell(usize(pop(vm))), false, width)
+
+// `HOLDS` ( addr u -- ): a string into the picture, which builds from the right.
+w_holds(vm: *Vm)
+    if !need(vm, 2) then return
+
+    var n = pop(vm)
+    val at = usize(pop(vm))
+
+    while n > 0 && vm.error == 0
+        n -= 1
+        hold_char(vm, byte_at(at)[usize(n)])

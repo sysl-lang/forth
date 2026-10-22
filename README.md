@@ -58,7 +58,7 @@ input never starts the REPL: `forth < file.fs` reads the file as it always has, 
 
 ## The words
 
-157 of them:
+185 of them:
 
 - **Stack:** `DUP ?DUP DROP SWAP OVER ROT NIP TUCK 2DUP 2DROP 2SWAP 2OVER >R R> R@ DEPTH PICK ROLL`
 - **Arithmetic and logic:** `+ - * / MOD /MOD */ */MOD AND OR XOR INVERT NEGATE ABS 1+ 1- 2* 2/
@@ -74,6 +74,9 @@ input never starts the REPL: `forth < file.fs` reads the file as it always has, 
 - **Output and input:** `EMIT TYPE CR SPACE SPACES . U. .S <# # #S #> HOLD SIGN KEY ACCEPT WORDS
   ENVIRONMENT?`
 - **Leaving:** `ABORT QUIT BYE`
+- **Core Extension, beyond the above:** `2>R 2R> 2R@ WITHIN VALUE TO DEFER IS DEFER@ DEFER!
+  ACTION-OF MARKER BUFFER: [COMPILE] CASE OF ENDOF ENDCASE C" S\" PAD ERASE UNUSED SAVE-INPUT
+  RESTORE-INPUT .R U.R HOLDS`
 
 The text interpreter also reads `#123`, `$FF`, `%101` and `'c'`, Forth 2012's number prefixes.
 
@@ -167,7 +170,7 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
 
 ## Tests
 
-`sysl test .` runs 49 tests:
+`sysl test .` runs 58 tests:
 
 - **The Hayes Core tests: 638 of 638 pass.** `tests/tester.fr` and `tests/core.fr` are John Hayes's
   files from [gerryjackson/forth2012-test-suite](https://github.com/gerryjackson/forth2012-test-suite)
@@ -184,6 +187,14 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
   | file | upstream path | SHA-256 | tests | errors |
   |---|---|---|---:|---:|
   | `tests/coreplustest.fth` | `src/coreplustest.fth` | `d967d1d367b3c0bf91b13944694fb5ac26fa793a63be3ea58bf50779971ef47b` | 101 | 0 |
+  | `tests/coreexttest.fth` | `src/coreexttest.fth` | `f35b9a78ac463985e2cfa616f19893204e25f5a51f0512324d8d45fe9e73b71b` | 383 | 0 |
+
+  The suite's helpers, loaded before the word-set files as its own `runtests.fth` loads them:
+  `tests/utilities.fth` (`src/utilities.fth`,
+  `69b362b974f2ecebb0dbea1d77281dcca7b112107d7ad7b3e7f764a40c1c83a7`) and `tests/errorreport.fth`
+  (`src/errorreport.fth`, `d348c8d5d2ad1793b118f83dda6f79d4c74c3d7abd973e8ad7d8841b8243366d`). A
+  word-set file hands its error count to `errorreport.fth`'s `SET-ERROR-COUNT` at its end, so the
+  test reads it from there, and checks the total over every file too.
 - The inner interpreter: a hand-built thread, a fault leaving through `run`, nested colon
   definitions, ten million loop iterations in one native frame, `EXECUTE` of every kind of word,
   `DOES>`, `LEAVE`/`UNLOOP`, `+LOOP` across zero.

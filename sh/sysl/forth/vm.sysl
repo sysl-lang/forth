@@ -68,7 +68,9 @@ const E_UNDEFINED: isize = -13
 const E_COMPILEONLY: isize = -14
 const E_ZERONAME: isize = -16
 const E_NAMELEN: isize = -19
+const E_UNSUPPORTED: isize = -21
 const E_CONTROL: isize = -22
+const E_RANGE: isize = -24
 const E_QUIT: isize = -56
 // Not a `THROW` code: `BYE` asked the host to end the program.
 const E_BYE: isize = 1
@@ -131,6 +133,11 @@ struct Vm
 
     // `COMPILE,`, which `POSTPONE` compiles a call to.
     xt_compile: usize
+
+    // The threads a deferred word and a marker run, and the token a deferred word starts with.
+    defer_does: usize
+    marker_does: usize
+    defer_unset: usize
 
     con: *Console
 
