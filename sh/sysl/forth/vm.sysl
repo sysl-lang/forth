@@ -6,7 +6,7 @@ module sh.sysl.forth
 //
 // **A cell is an `isize`**, as wide as an address, so `@` and `!` work on real machine addresses and a
 // Forth address is the number `usize(p)` gives. A double cell is two of them, low cell deeper on the
-// stack, and its arithmetic is done in 128 bits.
+// stack, and its arithmetic is done in a `DCell`, the integer twice as wide as a cell.
 //
 // **Nothing here allocates.** The dictionary is a region the caller hands over, and the stacks are
 // arrays inside the machine, so a program on a board with no heap declares one `Vm` and one region as
@@ -195,30 +195,44 @@ pop(vm: *Vm) -> isize
     val x = vm.tos
 
     vm.tos = vm.sp[0]
-    vm.sp = &vm.sp[isize(-1)]
+    vm.sp = &vm.sp[-1]
     x
 
 // The bits in a cell, which is how far a double cell's high half is shifted.
 const BITS: usize = CELL * 8
 
-// Push a double cell, low cell first. Only the low two cells' worth of `d` is kept, so the 128 bits
-// are exact on a 64-bit machine and roomy on a 32-bit one.
-push_ud(vm: *Vm, d: u128)
+// A double cell as a number, signed and unsigned: the integer twice as wide as a cell, chosen by how
+// wide the machine's addresses are.
+#if ptr16
+type DCell = i32
+type UDCell = u32
+#elif ptr32
+type DCell = i64
+type UDCell = u64
+#elif ptr64
+type DCell = i128
+type UDCell = u128
+#endif
+
+@assert(sizeof(DCell) == 2 * CELL, "a double cell is two cells")
+
+// Push a double cell, low cell first.
+push_ud(vm: *Vm, d: UDCell)
     push(vm, isize(d))
     push(vm, isize(d >> BITS))
 
-push_d(vm: *Vm, d: i128) = push_ud(vm, u128(d))
+push_d(vm: *Vm, d: DCell) = push_ud(vm, UDCell(d))
 
 // Pop a double cell as unsigned, and as signed: the signed one extends the high cell's sign.
-pop_ud(vm: *Vm) -> u128
-    val hi = u128(usize(pop(vm)))
-    val lo = u128(usize(pop(vm)))
+pop_ud(vm: *Vm) -> UDCell
+    val hi = UDCell(usize(pop(vm)))
+    val lo = UDCell(usize(pop(vm)))
 
     (hi << BITS) | lo
 
-pop_d(vm: *Vm) -> i128
-    val hi = i128(pop(vm))
-    val lo = i128(u128(usize(pop(vm))))
+pop_d(vm: *Vm) -> DCell
+    val hi = DCell(pop(vm))
+    val lo = DCell(UDCell(usize(pop(vm))))
 
     (hi << BITS) | lo
 

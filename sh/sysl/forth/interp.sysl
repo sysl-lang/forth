@@ -200,7 +200,7 @@ digit_value(c: u8) -> isize
 
 // `>NUMBER`'s loop: digits of `base` accumulated into `ud`. Answers the number and how many bytes
 // were digits.
-convert(ud: u128, s: []const u8, base: isize) -> (u128, usize)
+convert(ud: UDCell, s: []const u8, base: isize) -> (UDCell, usize)
     var n = ud
     var i: usize = 0
 
@@ -209,7 +209,7 @@ convert(ud: u128, s: []const u8, base: isize) -> (u128, usize)
 
         if d < 0 || d >= base then break
 
-        n = n * u128(usize(base)) + u128(usize(d))
+        n = n * UDCell(usize(base)) + UDCell(usize(d))
         i += 1
 
     (n, i)

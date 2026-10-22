@@ -135,7 +135,7 @@ p_exit(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 
     if rp - vm.r0 <= 0 then become rs_underflow(vm, ip, sp, tos)
 
-    vm.rp = &rp[isize(-1)]
+    vm.rp = &rp[-1]
 
     become next(vm, thread_at(usize(rp[0])), sp, tos)
 
@@ -147,7 +147,7 @@ p_execute(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     val xt = usize(tos)
     val code: Code = ptr_cast(usize(cell_at(xt)[0]))
 
-    if !takes_operand(code) then become code(vm, ip, &sp[isize(-1)], sp[0])
+    if !takes_operand(code) then become code(vm, ip, &sp[-1], sp[0])
 
     val rp = &vm.rp[1]
 
@@ -159,7 +159,7 @@ p_execute(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     vm.xbuf[1] = xt
     vm.xbuf[2] = usize(&p_exit)
 
-    become next(vm, &vm.xbuf[0], &sp[isize(-1)], sp[0])
+    become next(vm, &vm.xbuf[0], &sp[-1], sp[0])
 
 // A literal: the cell after this one.
 p_lit(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
@@ -175,7 +175,7 @@ p_branch(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 p_0branch(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, if tos == 0 then thread_at(ip[0]) else &ip[1], &sp[isize(-1)], sp[0])
+    become next(vm, if tos == 0 then thread_at(ip[0]) else &ip[1], &sp[-1], sp[0])
 
 // `DO`'s run-time half. The operand is where `LEAVE` goes. The return stack takes three cells: that
 // address, the limit and the index, the index on top.
@@ -191,13 +191,13 @@ p_do(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     rp[3] = tos
     vm.rp = &rp[3]
 
-    become next(vm, &ip[1], &sp[isize(-2)], sp[isize(-1)])
+    become next(vm, &ip[1], &sp[-2], sp[-1])
 
 // `?DO`: the same, except that a loop whose index starts at its limit is skipped.
 p_qdo(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    if sp[0] == tos then become next(vm, thread_at(ip[0]), &sp[isize(-2)], sp[isize(-1)])
+    if sp[0] == tos then become next(vm, thread_at(ip[0]), &sp[-2], sp[-1])
 
     become p_do(vm, ip, sp, tos)
 
@@ -206,8 +206,8 @@ p_loop(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     val rp = vm.rp
     val index = rp[0] + 1
 
-    if index == rp[isize(-1)]
-        vm.rp = &rp[isize(-3)]
+    if index == rp[-1]
+        vm.rp = &rp[-3]
 
         become next(vm, &ip[1], sp, tos)
 
@@ -223,17 +223,17 @@ p_ploop(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 
     val rp = vm.rp
     val step = tos
-    val was = rp[0] - rp[isize(-1)]
+    val was = rp[0] - rp[-1]
     val now = was + step
 
     if (was ^ now) & (was ^ step) < 0
-        vm.rp = &rp[isize(-3)]
+        vm.rp = &rp[-3]
 
-        become next(vm, &ip[1], &sp[isize(-1)], sp[0])
+        become next(vm, &ip[1], &sp[-1], sp[0])
 
     rp[0] = rp[0] + step
 
-    become next(vm, thread_at(ip[0]), &sp[isize(-1)], sp[0])
+    become next(vm, thread_at(ip[0]), &sp[-1], sp[0])
 
 p_i(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if vm.slim - sp <= 0 then become overflow(vm, ip, sp, tos)
@@ -247,17 +247,17 @@ p_j(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 
     sp[1] = tos
 
-    become next(vm, ip, &sp[1], vm.rp[isize(-3)])
+    become next(vm, ip, &sp[1], vm.rp[-3])
 
 p_leave(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     val rp = vm.rp
 
-    vm.rp = &rp[isize(-3)]
+    vm.rp = &rp[-3]
 
-    become next(vm, thread_at(usize(rp[isize(-2)])), sp, tos)
+    become next(vm, thread_at(usize(rp[-2])), sp, tos)
 
 p_unloop(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
-    vm.rp = &vm.rp[isize(-3)]
+    vm.rp = &vm.rp[-3]
 
     become next(vm, ip, sp, tos)
 
@@ -292,9 +292,9 @@ p_abortq(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if tos != 0
         vm.con.send(byte_at(at)[0..<len])
 
-        become aborted(vm, ip, &sp[isize(-1)], sp[0])
+        become aborted(vm, ip, &sp[-1], sp[0])
 
-    become next(vm, thread_at(aligned(at + len)), &sp[isize(-1)], sp[0])
+    become next(vm, thread_at(aligned(at + len)), &sp[-1], sp[0])
 
 // `DOES>`'s run-time half, run by the defining word: point the newest word at the thread that follows
 // this cell, and return from the defining word.
@@ -326,7 +326,7 @@ p_qdup(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 p_drop(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], sp[0])
+    become next(vm, ip, &sp[-1], sp[0])
 
 p_swap(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
@@ -348,9 +348,9 @@ p_over(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 p_rot(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 3 then become underflow(vm, ip, sp, tos)
 
-    val a = sp[isize(-1)]
+    val a = sp[-1]
 
-    sp[isize(-1)] = sp[0]
+    sp[-1] = sp[0]
     sp[0] = tos
 
     become next(vm, ip, sp, a)
@@ -358,7 +358,7 @@ p_rot(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 p_nip(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], tos)
+    become next(vm, ip, &sp[-1], tos)
 
 p_tuck(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
@@ -381,16 +381,16 @@ p_2dup(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 p_2drop(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-2)], sp[isize(-1)])
+    become next(vm, ip, &sp[-2], sp[-1])
 
 p_2swap(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 4 then become underflow(vm, ip, sp, tos)
 
-    val a = sp[isize(-2)]
-    val b = sp[isize(-1)]
+    val a = sp[-2]
+    val b = sp[-1]
 
-    sp[isize(-2)] = sp[0]
-    sp[isize(-1)] = tos
+    sp[-2] = sp[0]
+    sp[-1] = tos
     sp[0] = a
 
     become next(vm, ip, sp, b)
@@ -400,9 +400,9 @@ p_2over(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if vm.slim - sp < 2 then become overflow(vm, ip, sp, tos)
 
     sp[1] = tos
-    sp[2] = sp[isize(-2)]
+    sp[2] = sp[-2]
 
-    become next(vm, ip, &sp[2], sp[isize(-1)])
+    become next(vm, ip, &sp[2], sp[-1])
 
 p_tor(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
@@ -414,7 +414,7 @@ p_tor(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     rp[0] = tos
     vm.rp = rp
 
-    become next(vm, ip, &sp[isize(-1)], sp[0])
+    become next(vm, ip, &sp[-1], sp[0])
 
 p_rfrom(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     val rp = vm.rp
@@ -423,7 +423,7 @@ p_rfrom(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if vm.slim - sp <= 0 then become overflow(vm, ip, sp, tos)
 
     sp[1] = tos
-    vm.rp = &rp[isize(-1)]
+    vm.rp = &rp[-1]
 
     become next(vm, ip, &sp[1], rp[0])
 
@@ -441,32 +441,32 @@ p_rfetch(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 p_plus(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], sp[0] + tos)
+    become next(vm, ip, &sp[-1], sp[0] + tos)
 
 p_minus(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], sp[0] - tos)
+    become next(vm, ip, &sp[-1], sp[0] - tos)
 
 p_star(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], sp[0] * tos)
+    become next(vm, ip, &sp[-1], sp[0] * tos)
 
 p_and(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], sp[0] & tos)
+    become next(vm, ip, &sp[-1], sp[0] & tos)
 
 p_or(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], sp[0] | tos)
+    become next(vm, ip, &sp[-1], sp[0] | tos)
 
 p_xor(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], sp[0] ^ tos)
+    become next(vm, ip, &sp[-1], sp[0] ^ tos)
 
 // A shift by a cell's width or more leaves nothing, as it would bit by bit.
 p_lshift(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
@@ -474,54 +474,54 @@ p_lshift(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 
     val n = usize(tos)
 
-    become next(vm, ip, &sp[isize(-1)], if n >= BITS then 0 else isize(usize(sp[0]) << n))
+    become next(vm, ip, &sp[-1], if n >= BITS then 0 else isize(usize(sp[0]) << n))
 
 p_rshift(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
     val n = usize(tos)
 
-    become next(vm, ip, &sp[isize(-1)], if n >= BITS then 0 else isize(usize(sp[0]) >> n))
+    become next(vm, ip, &sp[-1], if n >= BITS then 0 else isize(usize(sp[0]) >> n))
 
 p_eq(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], flag(sp[0] == tos))
+    become next(vm, ip, &sp[-1], flag(sp[0] == tos))
 
 p_ne(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], flag(sp[0] != tos))
+    become next(vm, ip, &sp[-1], flag(sp[0] != tos))
 
 p_lt(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], flag(sp[0] < tos))
+    become next(vm, ip, &sp[-1], flag(sp[0] < tos))
 
 p_gt(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], flag(sp[0] > tos))
+    become next(vm, ip, &sp[-1], flag(sp[0] > tos))
 
 p_ult(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], flag(usize(sp[0]) < usize(tos)))
+    become next(vm, ip, &sp[-1], flag(usize(sp[0]) < usize(tos)))
 
 p_ugt(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], flag(usize(sp[0]) > usize(tos)))
+    become next(vm, ip, &sp[-1], flag(usize(sp[0]) > usize(tos)))
 
 p_min(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], if sp[0] < tos then sp[0] else tos)
+    become next(vm, ip, &sp[-1], if sp[0] < tos then sp[0] else tos)
 
 p_max(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], if sp[0] > tos then sp[0] else tos)
+    become next(vm, ip, &sp[-1], if sp[0] > tos then sp[0] else tos)
 
 // Division is symmetric: the quotient rounds toward zero, as C's does, and the remainder takes the
 // dividend's sign. The one quotient that does not fit, the most negative number divided by -1,
@@ -534,13 +534,13 @@ p_slash(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
     if tos == 0 then become divide_by_zero(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], quot(sp[0], tos))
+    become next(vm, ip, &sp[-1], quot(sp[0], tos))
 
 p_mod(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
     if tos == 0 then become divide_by_zero(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], rem(sp[0], tos))
+    become next(vm, ip, &sp[-1], rem(sp[0], tos))
 
 p_slashmod(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
@@ -621,7 +621,7 @@ p_store(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 
     cell_at(usize(tos))[0] = sp[0]
 
-    become next(vm, ip, &sp[isize(-2)], sp[isize(-1)])
+    become next(vm, ip, &sp[-2], sp[-1])
 
 p_plusstore(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
@@ -630,7 +630,7 @@ p_plusstore(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 
     p[0] = p[0] + sp[0]
 
-    become next(vm, ip, &sp[isize(-2)], sp[isize(-1)])
+    become next(vm, ip, &sp[-2], sp[-1])
 
 p_cfetch(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 1 then become underflow(vm, ip, sp, tos)
@@ -642,4 +642,4 @@ p_cstore(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 
     byte_at(usize(tos))[0] = u8(sp[0])
 
-    become next(vm, ip, &sp[isize(-2)], sp[isize(-1)])
+    become next(vm, ip, &sp[-2], sp[-1])

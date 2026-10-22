@@ -7,7 +7,7 @@ with cells as wide as the machine's pointer, that passes John Hayes's Core tests
 guaranteed tail calls through a table of code addresses, registers that live in parameters across an
 unbounded chain of functions, a dictionary that is one flat byte region addressed by plain numbers,
 double-width arithmetic, and all of it with no allocator so that it can run on a board. Wherever sysl
-could not say one of those directly, the gap is written up below rather than worked around quietly.
+could not say one of those directly, the gap goes to sysl to be fixed rather than worked around here.
 
 ```
 $ forth
@@ -80,7 +80,14 @@ The text interpreter also reads `#123`, `$FF`, `%101` and `'c'`, Forth 2012's nu
 **Division is symmetric**: `/`, `MOD`, `/MOD`, `*/` and `*/MOD` round the quotient toward zero, as C
 does, and the remainder takes the dividend's sign. Forth 2012 leaves the choice to the
 implementation; `FM/MOD` gives floored division where a program wants it. A double cell is two cells,
-low cell deeper, and its arithmetic is done in 128 bits.
+low cell deeper, and its arithmetic is done in `DCell`, the integer twice as wide as a cell, chosen by
+the target's address width with `#if ptr16` / `ptr32` / `ptr64`:
+
+| target's addresses | cell | `DCell` |
+|---|---|---|
+| 64 bits (`aarch64`, `x86_64`, `riscv64`) | `isize`, 8 bytes | `i128` |
+| 32 bits (`thumb`, `riscv32`, `wasm32`, `x86`) | `isize`, 4 bytes | `i64` |
+| 16 bits (`craft`) | `isize`, 2 bytes | `i32` |
 
 `ENVIRONMENT?` answers false to every query. There is no `THROW`/`CATCH`, no `DOUBLE` word set and no
 `WORDLIST`s yet.
@@ -124,7 +131,7 @@ next(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 p_plus(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 2 then become underflow(vm, ip, sp, tos)
 
-    become next(vm, ip, &sp[isize(-1)], sp[0] + tos)
+    become next(vm, ip, &sp[-1], sp[0] + tos)
 ```
 
 `become` is sysl's guaranteed tail call — LLVM's `musttail` — so each primitive *replaces* its frame
@@ -215,25 +222,6 @@ printed the same answer. Each time includes starting the system, which is a few 
 with gforth-fast on the loop kernel, and about twice as fast as pForth throughout. Every forth
 primitive checks the stack depth before it touches the stack, which gforth-fast does not; where
 gforth-fast's lead on fib and bubble comes from has not been measured yet.
-
-## What sysl could not say
-
-Found writing this, each with a reduction:
-
-1. **`p[-1]` on a raw pointer is refused** — `the literal -1 does not fit usize` — while
-   `p[isize(-1)]` compiles and reads the element before `p`. The reference has `&p[n]` as the only
-   spelling of an offset, so a negative literal there is legal and the literal's type is the bug.
-   The core writes `&sp[isize(-1)]` sixty-odd times.
-2. **`return f()` where `f` returns `unit` is refused** — `cannot return a value from a function
-   with no return type` — though `unit` is "an ordinary type" and `g() = f()` is accepted.
-3. **A module `val` over a literal is a load from memory at every use in a multi-unit build**:
-   `val E_UNDERFLOW: isize = -4` became `adrp; ldr` in every primitive's fault path, and `val CELL =
-   sizeof(isize)` a load inside `docol`'s hot path, while `SYSL_CODEGEN_UNITS=1` gives `mov x8, #-4`.
-   The constant sits in one codegen unit and the others see an external global. The core uses
-   `const`, which folds.
-4. **Nothing names "the integer twice as wide as `isize`"**, which is what a Forth double cell is,
-   and `#if` chooses by processor rather than by address width. The core does double-cell arithmetic
-   in `i128` on every target: exact, but twice the work a 32-bit board needs.
 
 ## What's next
 

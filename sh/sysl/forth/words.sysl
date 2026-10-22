@@ -19,13 +19,8 @@ w_colon(vm: *Vm)
     vm.state = -1
 
 w_semicolon(vm: *Vm)
-    if vm.def_start == 0
-        fail(vm, E_COMPILEONLY)
-        return
-
-    if depth_of(vm) != vm.def_depth
-        fail(vm, E_CONTROL)
-        return
+    if vm.def_start == 0 then return fail(vm, E_COMPILEONLY)
+    if depth_of(vm) != vm.def_depth then return fail(vm, E_CONTROL)
 
     compile_code(vm, &p_exit)
     clear_flag(vm.latest, F_HIDDEN)
@@ -102,9 +97,7 @@ w_postpone(vm: *Vm)
     val name = parse_name(vm)
     val h = find(vm, name)
 
-    if h == 0
-        fail(vm, E_UNDEFINED)
-        return
+    if h == 0 then return fail(vm, E_UNDEFINED)
 
     if flags_of(h) & F_IMMEDIATE != 0
         compile_xt(vm, xt_of(h))
@@ -244,18 +237,14 @@ w_backslash(vm: *Vm)
 w_char(vm: *Vm)
     val name = parse_name(vm)
 
-    if name.len == 0
-        fail(vm, E_ZERONAME)
-        return
+    if name.len == 0 then return fail(vm, E_ZERONAME)
 
     push(vm, isize(name[0]))
 
 w_bracket_char(vm: *Vm)
     val name = parse_name(vm)
 
-    if name.len == 0
-        fail(vm, E_ZERONAME)
-        return
+    if name.len == 0 then return fail(vm, E_ZERONAME)
 
     compile_literal(vm, isize(name[0]))
 
@@ -510,21 +499,21 @@ w_bye(vm: *Vm) = fail(vm, E_BYE)
 // Double-cell arithmetic.
 
 w_s_to_d(vm: *Vm)
-    if need(vm, 1) then push_d(vm, i128(pop(vm)))
+    if need(vm, 1) then push_d(vm, DCell(pop(vm)))
 
 w_mstar(vm: *Vm)
     if !need(vm, 2) then return
 
-    val b = i128(pop(vm))
-    val a = i128(pop(vm))
+    val b = DCell(pop(vm))
+    val a = DCell(pop(vm))
 
     push_d(vm, a * b)
 
 w_umstar(vm: *Vm)
     if !need(vm, 2) then return
 
-    val b = u128(usize(pop(vm)))
-    val a = u128(usize(pop(vm)))
+    val b = UDCell(usize(pop(vm)))
+    val a = UDCell(usize(pop(vm)))
 
     push_ud(vm, a * b)
 
@@ -532,21 +521,17 @@ w_umstar(vm: *Vm)
 w_um_slash_mod(vm: *Vm)
     if !need(vm, 3) then return
 
-    val u = u128(usize(pop(vm)))
+    val u = UDCell(usize(pop(vm)))
     val ud = pop_ud(vm)
 
-    if u == 0
-        fail(vm, E_DIVZERO)
-        return
+    if u == 0 then return fail(vm, E_DIVZERO)
 
     push(vm, isize(ud % u))
     push(vm, isize(ud / u))
 
 // Symmetric division of a double by a single: the quotient rounds toward zero.
-sym_divide(vm: *Vm, d: i128, n: i128)
-    if n == 0
-        fail(vm, E_DIVZERO)
-        return
+sym_divide(vm: *Vm, d: DCell, n: DCell)
+    if n == 0 then return fail(vm, E_DIVZERO)
 
     if n == -1
         push(vm, 0)
@@ -558,10 +543,8 @@ sym_divide(vm: *Vm, d: i128, n: i128)
 
 // Floored division: the quotient rounds toward negative infinity, and the remainder takes the
 // divisor's sign.
-floor_divide(vm: *Vm, d: i128, n: i128)
-    if n == 0
-        fail(vm, E_DIVZERO)
-        return
+floor_divide(vm: *Vm, d: DCell, n: DCell)
+    if n == 0 then return fail(vm, E_DIVZERO)
 
     if n == -1
         push(vm, 0)
@@ -581,14 +564,14 @@ floor_divide(vm: *Vm, d: i128, n: i128)
 w_sm_slash_rem(vm: *Vm)
     if !need(vm, 3) then return
 
-    val n = i128(pop(vm))
+    val n = DCell(pop(vm))
 
     sym_divide(vm, pop_d(vm), n)
 
 w_fm_slash_mod(vm: *Vm)
     if !need(vm, 3) then return
 
-    val n = i128(pop(vm))
+    val n = DCell(pop(vm))
 
     floor_divide(vm, pop_d(vm), n)
 
@@ -596,9 +579,9 @@ w_fm_slash_mod(vm: *Vm)
 w_star_slash_mod(vm: *Vm)
     if !need(vm, 3) then return
 
-    val c = i128(pop(vm))
-    val b = i128(pop(vm))
-    val a = i128(pop(vm))
+    val c = DCell(pop(vm))
+    val b = DCell(pop(vm))
+    val a = DCell(pop(vm))
 
     sym_divide(vm, a * b, c)
 
@@ -643,9 +626,7 @@ w_spaces(vm: *Vm)
 hold_end(vm: *Vm) -> usize = usize(&vm.hold[0]) + HOLD_BYTES
 
 hold_char(vm: *Vm, c: u8)
-    if vm.hld <= usize(&vm.hold[0])
-        fail(vm, E_OVERFLOW)
-        return
+    if vm.hld <= usize(&vm.hold[0]) then return fail(vm, E_OVERFLOW)
 
     vm.hld -= 1
     byte_at(vm.hld)[0] = c
@@ -653,12 +634,12 @@ hold_char(vm: *Vm, c: u8)
 digit_char(d: usize) -> u8 = if d < 10 then u8('0') + u8(d) else u8('A') + u8(d - 10)
 
 // One digit of `ud` into the picture; answers what is left of it.
-sharp(vm: *Vm, ud: u128) -> u128
+sharp(vm: *Vm, ud: UDCell) -> UDCell
     if vm.base < 2 || vm.base > 36
         fail(vm, E_DIVZERO)
         return 0
 
-    val base = u128(usize(vm.base))
+    val base = UDCell(usize(vm.base))
 
     hold_char(vm, digit_char(usize(ud % base)))
     ud / base
@@ -694,7 +675,7 @@ w_sign(vm: *Vm)
     if need(vm, 1) && pop(vm) < 0 then hold_char(vm, u8('-'))
 
 // A number in the current base and a space, as `.` and `U.` show it.
-show(vm: *Vm, magnitude: u128, negative: bool)
+show(vm: *Vm, magnitude: UDCell, negative: bool)
     vm.hld = hold_end(vm)
 
     var ud = sharp(vm, magnitude)
@@ -713,12 +694,12 @@ w_dot(vm: *Vm)
     if !need(vm, 1) then return
 
     val n = pop(vm)
-    val magnitude = if n < 0 then u128(usize(0 - n)) else u128(usize(n))
+    val magnitude = if n < 0 then UDCell(usize(0 - n)) else UDCell(usize(n))
 
     show(vm, magnitude, n < 0)
 
 w_udot(vm: *Vm)
-    if need(vm, 1) then show(vm, u128(usize(pop(vm))), false)
+    if need(vm, 1) then show(vm, UDCell(usize(pop(vm))), false)
 
 // `.S`: the stack, deepest first, without changing it.
 w_dots(vm: *Vm)
@@ -728,13 +709,13 @@ w_dots(vm: *Vm)
 
     val saved = vm.base
 
-    show(vm, u128(usize(d)), false)
+    show(vm, UDCell(usize(d)), false)
     vm.con.send("> ".bytes)
 
     for k in 1..<d + 1
         val x = if k == d then vm.tos else vm.s0[k + 1]
 
-        show(vm, if x < 0 then u128(usize(0 - x)) else u128(usize(x)), x < 0)
+        show(vm, if x < 0 then UDCell(usize(0 - x)) else UDCell(usize(x)), x < 0)
 
     vm.base = saved
 
