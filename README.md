@@ -58,7 +58,7 @@ input never starts the REPL: `forth < file.fs` reads the file as it always has, 
 
 ## The words
 
-156 of them:
+157 of them:
 
 - **Stack:** `DUP ?DUP DROP SWAP OVER ROT NIP TUCK 2DUP 2DROP 2SWAP 2OVER >R R> R@ DEPTH PICK ROLL`
 - **Arithmetic and logic:** `+ - * / MOD /MOD */ */MOD AND OR XOR INVERT NEGATE ABS 1+ 1- 2* 2/
@@ -67,7 +67,7 @@ input never starts the REPL: `forth < file.fs` reads the file as it always has, 
   MOVE`
 - **Control flow:** `IF ELSE THEN BEGIN UNTIL AGAIN WHILE REPEAT DO ?DO LOOP +LOOP I J LEAVE UNLOOP
   EXIT RECURSE EXECUTE`
-- **Defining words and the compiler:** `: ; CREATE VARIABLE CONSTANT DOES> IMMEDIATE ' ['] [ ]
+- **Defining words and the compiler:** `: :NONAME ; CREATE VARIABLE CONSTANT DOES> IMMEDIATE ' ['] [ ]
   LITERAL COMPILE, POSTPONE >BODY STATE`
 - **The parser and interpreter:** `WORD PARSE PARSE-NAME FIND EVALUATE SOURCE SOURCE-ID REFILL >IN
   >NUMBER BASE DECIMAL HEX ( \ CHAR [CHAR] S" ." .( ABORT"`
@@ -167,7 +167,7 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
 
 ## Tests
 
-`sysl test .` runs 47 tests:
+`sysl test .` runs 49 tests:
 
 - **The Hayes Core tests: 638 of 638 pass.** `tests/tester.fr` and `tests/core.fr` are John Hayes's
   files from [gerryjackson/forth2012-test-suite](https://github.com/gerryjackson/forth2012-test-suite)
@@ -176,6 +176,14 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
   a `ScriptConsole`. From a shell, the same run is
   `./forth tests/tester.fr tests/count.fs tests/core.fr tests/report.fs < /dev/null`, which prints
   `tests: 638 failed: 0` after core.fr's own output.
+- **The Forth 2012 suite's word-set files**, from the same commit, unchanged, each run by a sysl
+  test after `tester.fr` and `core.fr` (and the suite's helpers where the file needs them), with
+  `count.fs` loaded just before it. Each test asserts the number of tests, zero errors in tester's
+  count, and that no line faulted:
+
+  | file | upstream path | SHA-256 | tests | errors |
+  |---|---|---|---:|---:|
+  | `tests/coreplustest.fth` | `src/coreplustest.fth` | `d967d1d367b3c0bf91b13944694fb5ac26fa793a63be3ea58bf50779971ef47b` | 101 | 0 |
 - The inner interpreter: a hand-built thread, a fault leaving through `run`, nested colon
   definitions, ten million loop iterations in one native frame, `EXECUTE` of every kind of word,
   `DOES>`, `LEAVE`/`UNLOOP`, `+LOOP` across zero.

@@ -15,6 +15,26 @@ w_colon(vm: *Vm)
 
     set_flag(vm.latest, F_HIDDEN)
     vm.def_start = start
+    vm.def_named = true
+    vm.def_depth = depth_of(vm)
+    vm.state = -1
+
+// `:NONAME`: a colon definition with no header, whose token is left on the stack. `RECURSE` inside it
+// calls it, so it is the newest token until `;`.
+w_noname(vm: *Vm)
+    align_here(vm)
+
+    if !reserve(vm, 2 * CELL) then return
+
+    val xt = vm.here
+
+    compile_code(vm, &docol)
+    comma(vm, 0)
+    vm.def_start = xt
+    vm.def_named = false
+    vm.def_xt = vm.latest_xt
+    vm.latest_xt = xt
+    push(vm, isize(xt))
     vm.def_depth = depth_of(vm)
     vm.state = -1
 
@@ -23,7 +43,12 @@ w_semicolon(vm: *Vm)
     if depth_of(vm) != vm.def_depth then return fail(vm, E_CONTROL)
 
     compile_code(vm, &p_exit)
-    clear_flag(vm.latest, F_HIDDEN)
+
+    if vm.def_named
+        clear_flag(vm.latest, F_HIDDEN)
+    else
+        vm.latest_xt = vm.def_xt
+
     vm.def_start = 0
     vm.state = 0
 

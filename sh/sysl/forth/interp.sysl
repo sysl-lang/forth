@@ -365,8 +365,13 @@ report(vm: *Vm)
 recover(vm: *Vm)
     if vm.def_start != 0
         vm.here = vm.def_start
-        vm.latest = link_of(vm.def_start)
-        vm.latest_xt = if vm.latest == 0 then 0 else xt_of(vm.latest)
+
+        if vm.def_named
+            vm.latest = link_of(vm.def_start)
+            vm.latest_xt = if vm.latest == 0 then 0 else xt_of(vm.latest)
+        else
+            vm.latest_xt = vm.def_xt
+
         vm.def_start = 0
 
     if vm.error != E_QUIT
@@ -400,6 +405,7 @@ interpret_source(vm: *Vm) -> isize
     if code == E_BYE then return code
 
     if code != 0
+        vm.faults += 1
         report(vm)
         recover(vm)
 

@@ -271,6 +271,22 @@ interpret_line_answers()
     assert(interpret_line(&vm, "7 SQ . BYE 8 .".bytes) == E_BYE, "BYE")
     assert(written(&con) == "3 NOPE ?\n49 ".bytes, "what the lines printed")
 
+@test(":NONAME leaves a token that RECURSE inside it calls, and a fault takes it back out")
+dict_noname()
+    assert(says(":NONAME DUP IF 1- RECURSE THEN ; 5 SWAP EXECUTE .", "0 "), "recursion")
+    start("".bytes)
+    evaluate(&vm, ": A 1 ; :NONAME 2 ;".bytes)
+    assert(vm.error == 0 && vm.latest_xt == xt_of(find(&vm, "A".bytes)), "after ; the newest word is A again")
+    start("".bytes)
+
+    val here = vm.here
+    val latest = vm.latest_xt
+
+    evaluate(&vm, ":NONAME 1 FROB".bytes)
+    assert(vm.error == E_UNDEFINED, "undefined")
+    recover(&vm)
+    assert(vm.here == here && vm.latest_xt == latest && vm.state == 0, "taken back out")
+
 // ---------------------------------------------------------------------------------------------------
 // Arithmetic choices the standard leaves open.
 
@@ -300,3 +316,32 @@ hayes_core()
 
     assert(tests == 638, "every test in core.fr ran")
     assert(failed == 0, "none failed")
+    assert(vm.faults == 0, "no line faulted")
+
+// A machine that has run the tester and the Core tests, with the counting `T{` loaded last so that
+// only the tests after it are counted.
+after_core()
+    start(embed("../../../tests/tester.fr"))
+    quit(&vm)
+    also(embed("../../../tests/core.fr"))
+
+// The tests counted since `count.fs`, and `#ERRORS`.
+tally() -> (isize, isize)
+    evaluate(&vm, "#TESTS @ #ERRORS @".bytes)
+    assert(vm.error == 0, "the counters are there")
+
+    val failed = pop(&vm)
+
+    (pop(&vm), failed)
+
+@test("the Forth 2012 suite's additional Core tests all pass")
+forth2012_core_plus()
+    after_core()
+    also(embed("../../../tests/count.fs"))
+    also(embed("../../../tests/coreplustest.fth"))
+
+    val (tests, failed) = tally()
+
+    assert(tests == 101, "every test in coreplustest.fth ran")
+    assert(failed == 0, "none failed")
+    assert(vm.faults == 0, "no line faulted")

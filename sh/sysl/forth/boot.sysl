@@ -14,6 +14,7 @@ boot(vm: *Vm, lo: usize, size: usize, con: *Console)
     vm.rlim = &vm.rs[RS_CELLS - 1]
     reset_stacks(vm)
     vm.error = 0
+    vm.faults = 0
     vm.state = 0
     vm.base = 10
     vm.to_in = 0
@@ -151,6 +152,7 @@ define_words(vm: *Vm)
 
     // Defining words and the compiler.
     slow(vm, ":", &w_colon)
+    slow(vm, ":NONAME", &w_noname)
     slow(vm, ";", &w_semicolon)
     immediate(vm)
     slow(vm, "CREATE", &w_create)

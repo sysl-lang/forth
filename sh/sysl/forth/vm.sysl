@@ -91,6 +91,9 @@ struct Vm
     // Nonzero once something has gone wrong, until the outer interpreter has reported it.
     error: isize
 
+    // How many faults the outer interpreter has reported, so that a run can be checked for none.
+    faults: isize
+
     // The variables Forth programs read and write by address: `STATE`, `BASE` and `>IN`.
     state: isize
     base: isize
@@ -107,11 +110,14 @@ struct Vm
     lo: usize
     hi: usize
 
-    // The newest header, the newest execution token, and the header of the definition being
-    // compiled (0 when none is).
+    // The newest header, the newest execution token, and where the definition being compiled starts
+    // (0 when none is). A `:NONAME` definition has no header: `def_named` is false, and `def_xt` is
+    // the newest token from before it, which `;` puts back.
     latest: usize
     latest_xt: usize
     def_start: usize
+    def_named: bool
+    def_xt: usize
 
     // How deep the control-flow stack was when the current definition began, so that `;` can tell
     // an unfinished `IF` from a finished one.
