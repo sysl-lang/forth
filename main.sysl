@@ -8,7 +8,7 @@
 // with the dictionary as it was.
 
 import sh.sysl.forth.{Vm, boot, quit}
-import sh.sysl.forth.host.{complete_word, eval_line, forth_prompts, keyboard_console, script_console_of, session}
+import sh.sysl.forth.host.{HostConsole, complete_word, eval_line, forth_prompts, keyboard_console, script_console_of, session}
 import sh.sysl.repl.no_hint
 import sh.sysl.repl.host.{config, home_file, repl_with}
 import sysl.fs.read_bytes
@@ -17,9 +17,10 @@ import sysl.posix.tty.is_tty
 // The dictionary: 128K cells, a megabyte on a 64-bit machine.
 var region: [131072]usize
 var vm: Vm
+var con: HostConsole
 
 main(args: []string)
-    var con = keyboard_console()
+    con = keyboard_console()
 
     boot(&vm, usize(&region[0]), region.len * sizeof(usize), &con)
 
@@ -40,9 +41,7 @@ main(args: []string)
     for i in 1..<args.len
         read_bytes(args[i]) match
             Ok(text) ->
-                var file = script_console_of(text)
-
-                vm.con = &file
+                con = script_console_of(text)
 
                 if quit(&vm) then return
             Err(e) ->

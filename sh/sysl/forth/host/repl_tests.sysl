@@ -10,6 +10,7 @@ import sysl.text.split
 
 var region: [65536]usize
 var vm: Vm
+var con: HostConsole
 
 struct Ran
     ended: Ended
@@ -17,7 +18,7 @@ struct Ran
 
 // The REPL over a fresh machine, sent `keys`.
 repl_of(keys: string) -> Ran
-    var con = keyboard_console()
+    con = keyboard_console()
 
     boot(&vm, usize(&region[0]), region.len * sizeof(usize), &con)
 
@@ -107,7 +108,7 @@ repl_completes_a_user_word()
 
 @test("completion offers every word with the prefix once, newest first, and never the one being defined")
 repl_completion_candidates()
-    var con = keyboard_console()
+    con = keyboard_console()
 
     boot(&vm, usize(&region[0]), region.len * sizeof(usize), &con)
 
