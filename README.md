@@ -115,6 +115,22 @@ Two modules and a program:
 | `sh.sysl.forth.host` | `HostConsole`: standard output, standard input as the keyboard, and the source either a file or standard input; and the REPL's evaluator, console and completion |
 | `main.sysl` | `forth` at a terminal, `forth file.fs` and `forth < file.fs` |
 
+**The `host` feature** (on by default, enabling the optional `repl` dependency) is the program, the
+host console and the REPL. A board firmware depends on the core alone, in its `sysl.hocon`:
+
+```
+dependencies {
+  forth { git = "github.com/sysl-lang/forth", version = "0.1.0", default_features = false }
+}
+```
+
+and supplies a `Console` of its own. `sysl build-c . --target thumb-freestanding-softfp` on a program
+that depends on it this way builds the core with no operating system under it.
+
+**Cells are two's complement.** Cell arithmetic (`+ - * 1+ 1- NEGATE ABS`, `+!`, `+LOOP`, `CELLS`)
+wraps, and a cell read as unsigned or as an address (`U. U< U> RSHIFT`, `C!`, `@`) is its bit
+pattern, so none of them traps on a debug build.
+
 **The core talks to the world only through `Console`**: `emit`, `send`, `key`, `accept` and
 `refill`. `refill` is where the text interpreter's lines come from and `accept`/`key` are the
 keyboard, so a file being run and the keyboard `ACCEPT` reads stay separate. A front end that has its
@@ -186,7 +202,7 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
 
 ## Tests
 
-`sysl test .` runs 74 tests:
+`sysl test .` runs 79 tests (65 with `--no-default-features`, which leaves out the host module's):
 
 - **The Hayes Core tests: 638 of 638 pass.** `tests/tester.fr` and `tests/core.fr` are John Hayes's
   files from [gerryjackson/forth2012-test-suite](https://github.com/gerryjackson/forth2012-test-suite)
