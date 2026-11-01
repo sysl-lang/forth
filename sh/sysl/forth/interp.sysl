@@ -39,7 +39,7 @@ comma(vm: *Vm, x: isize)
     cell_at(vm.here)[0] = x
     vm.here += CELL
 
-comma_u(vm: *Vm, x: usize) = comma(vm, isize(x))
+comma_u(vm: *Vm, x: usize) = comma(vm, isize.wrap(x))
 
 ccomma(vm: *Vm, b: u8)
     if !reserve(vm, 1) then return
@@ -50,7 +50,7 @@ ccomma(vm: *Vm, b: u8)
 // Compile a reference to the word whose token is `xt`: its code, and the token too when the code
 // reads one.
 compile_xt(vm: *Vm, xt: usize)
-    val code: Code = ptr_cast(usize(cell_at(xt)[0]))
+    val code: Code = ptr_cast(usize.wrap(cell_at(xt)[0]))
 
     comma_u(vm, usize(code))
 
@@ -99,7 +99,7 @@ header(vm: *Vm, name: []const u8, code: Code) -> bool
     vm.error == 0
 
 // The parts of a header.
-link_of(h: usize) -> usize = usize(cell_at(h)[0])
+link_of(h: usize) -> usize = usize.wrap(cell_at(h)[0])
 
 flags_of(h: usize) -> u8 = byte_at(h + CELL)[0]
 
@@ -211,7 +211,7 @@ convert(ud: UDCell, s: []const u8, base: isize) -> (UDCell, usize)
 
         if d < 0 || d >= base then break
 
-        n = n * UDCell(usize(base)) + UDCell(usize(d))
+        n = n *% UDCell(usize(base)) +% UDCell(usize(d))
         i += 1
 
     (n, i)
@@ -247,9 +247,9 @@ number(vm: *Vm, s: []const u8) -> Option[isize]
 
     if i + used != s.len then return None
 
-    val x = isize(n)
+    val x = isize.wrap(n)
 
-    Some(if negative then 0 - x else x)
+    Some(if negative then 0 -% x else x)
 
 // ---------------------------------------------------------------------------------------------------
 // The text interpreter.
@@ -258,7 +258,7 @@ number(vm: *Vm, s: []const u8) -> Option[isize]
 // cell that hands control back here.
 execute(vm: *Vm, xt: usize)
     var thread: [3]usize = [0, 0, 0]
-    val code: Code = ptr_cast(usize(cell_at(xt)[0]))
+    val code: Code = ptr_cast(usize.wrap(cell_at(xt)[0]))
 
     thread[0] = usize(code)
 

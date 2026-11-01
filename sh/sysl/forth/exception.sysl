@@ -31,7 +31,7 @@ p_throw(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 w_catch(vm: *Vm)
     if !need(vm, 1) then return
 
-    val xt = usize(pop(vm))
+    val xt = usize.wrap(pop(vm))
     val depth = depth_of(vm)
     val rp = vm.rp
     val src = vm.src

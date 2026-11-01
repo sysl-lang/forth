@@ -55,7 +55,7 @@ p_2rfetch(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 p_within(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     if sp - vm.s0 < 3 then become underflow(vm, ip, sp, tos)
 
-    val inside = usize(sp[-1] - sp[0]) < usize(tos - sp[0])
+    val inside = usize.wrap(sp[-1] -% sp[0]) < usize.wrap(tos -% sp[0])
 
     become next(vm, ip, &sp[-2], flag(inside))
 
@@ -78,7 +78,7 @@ p_clit(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 
     sp[1] = tos
 
-    become next(vm, thread_at(aligned(at + len)), &sp[1], isize(at))
+    become next(vm, thread_at(aligned(at + len)), &sp[1], isize.wrap(at))
 
 // ---------------------------------------------------------------------------------------------------
 // The threads behind `DEFER` and `MARKER`, laid down when the machine boots.
@@ -101,10 +101,10 @@ w_defer_unset(vm: *Vm) = fail(vm, E_UNSUPPORTED)
 w_marker_restore(vm: *Vm)
     if !need(vm, 1) then return
 
-    val body = usize(pop(vm))
+    val body = usize.wrap(pop(vm))
 
-    vm.here = usize(cell_at(body)[0])
-    vm.latest = usize(cell_at(body + CELL)[0])
+    vm.here = usize.wrap(cell_at(body)[0])
+    vm.latest = usize.wrap(cell_at(body + CELL)[0])
     vm.latest_xt = if vm.latest == 0 then 0 else xt_of(vm.latest)
     trim_substitutions(vm)
 
@@ -124,8 +124,8 @@ boot_ext(vm: *Vm)
 
 // Make the newest word run `thread` with its body's address, as `DOES>` would have.
 does_thread(vm: *Vm, thread: usize)
-    cell_at(vm.latest_xt)[0] = isize(usize(&dodoes))
-    cell_at(vm.latest_xt + CELL)[0] = isize(thread)
+    cell_at(vm.latest_xt)[0] = isize.wrap(usize(&dodoes))
+    cell_at(vm.latest_xt + CELL)[0] = isize.wrap(thread)
 
 // ---------------------------------------------------------------------------------------------------
 // Defining words.
@@ -143,7 +143,7 @@ w_to(vm: *Vm)
     val body = xt + 2 * CELL
 
     if vm.state != 0
-        compile_literal(vm, isize(body))
+        compile_literal(vm, isize.wrap(body))
         compile_code(vm, &p_store)
         return
 
@@ -158,12 +158,12 @@ w_defer(vm: *Vm)
 
 // `DEFER@` ( xt1 -- xt2 ) and `DEFER!` ( xt2 xt1 -- ).
 w_defer_fetch(vm: *Vm)
-    if need(vm, 1) then push(vm, cell_at(usize(pop(vm)) + 2 * CELL)[0])
+    if need(vm, 1) then push(vm, cell_at(usize.wrap(pop(vm)) + 2 * CELL)[0])
 
 w_defer_store(vm: *Vm)
     if !need(vm, 2) then return
 
-    val xt = usize(pop(vm))
+    val xt = usize.wrap(pop(vm))
 
     cell_at(xt + 2 * CELL)[0] = pop(vm)
 
@@ -176,7 +176,7 @@ w_action_of(vm: *Vm)
     val body = xt + 2 * CELL
 
     if vm.state != 0
-        compile_literal(vm, isize(body))
+        compile_literal(vm, isize.wrap(body))
         compile_code(vm, &p_fetch)
         return
 
@@ -269,7 +269,7 @@ w_cquote(vm: *Vm)
     for i in 0..<n
         vm.sbuf[which][i + 1] = s[i]
 
-    push(vm, isize(usize(&vm.sbuf[which][0])))
+    push(vm, isize.wrap(usize(&vm.sbuf[which][0])))
 
 // The byte a one-letter escape in `S\"` names, or -1 for a letter that is not an escape.
 escape_byte(e: u8) -> isize
@@ -343,26 +343,26 @@ w_sbackslashquote(vm: *Vm)
 // ---------------------------------------------------------------------------------------------------
 // Memory, input and output.
 
-w_pad(vm: *Vm) = push(vm, isize(usize(&vm.pad[0])))
+w_pad(vm: *Vm) = push(vm, isize.wrap(usize(&vm.pad[0])))
 
 // `ERASE` ( addr u -- ).
 w_erase(vm: *Vm)
     if !need(vm, 2) then return
 
     val n = pop(vm)
-    val at = usize(pop(vm))
+    val at = usize.wrap(pop(vm))
 
     for i in 0..<(if n > 0 then usize(n) else 0)
         byte_at(at)[i] = 0
 
-w_unused(vm: *Vm) = push(vm, isize(if vm.hi > vm.here then vm.hi - vm.here else 0))
+w_unused(vm: *Vm) = push(vm, isize.wrap(if vm.hi > vm.here then vm.hi - vm.here else 0))
 
 // `SAVE-INPUT` ( -- x1 x2 x3 3 ) and `RESTORE-INPUT` ( x1 x2 x3 3 -- flag ): the input source and
 // where in it parsing is. Restoring answers false when it worked, and true for the record of another
 // source, which it cannot go back to.
 w_save_input(vm: *Vm)
     push(vm, vm.to_in)
-    push(vm, isize(vm.src))
+    push(vm, isize.wrap(vm.src))
     push(vm, vm.src_id)
     push(vm, 3)
 
@@ -385,7 +385,7 @@ w_restore_input(vm: *Vm)
     if !need(vm, 3) then return
 
     val src_id = pop(vm)
-    val src = usize(pop(vm))
+    val src = usize.wrap(pop(vm))
     val to_in = pop(vm)
 
     if src != vm.src || src_id != vm.src_id then return push(vm, -1)
@@ -407,14 +407,14 @@ w_u_dot_r(vm: *Vm)
 
     val width = pop(vm)
 
-    show_right(vm, UDCell(usize(pop(vm))), false, width)
+    show_right(vm, UDCell(usize.wrap(pop(vm))), false, width)
 
 // `HOLDS` ( addr u -- ): a string into the picture, which builds from the right.
 w_holds(vm: *Vm)
     if !need(vm, 2) then return
 
     var n = pop(vm)
-    val at = usize(pop(vm))
+    val at = usize.wrap(pop(vm))
 
     while n > 0 && vm.error == 0
         n -= 1

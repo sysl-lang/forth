@@ -300,6 +300,62 @@ arith_pictured()
     assert(says("-255 DUP ABS 0 <# #S ROT SIGN #> TYPE 255 HEX 0 <# # # #> TYPE", "-255FF"), "pictured")
 
 // ---------------------------------------------------------------------------------------------------
+// Cells are two's complement and cell arithmetic wraps. The tests assume 64-bit cells.
+
+@test("unsigned views of negative cells: U., U<, U>, UM/MOD, U.R")
+cells_unsigned_views()
+    assert(says("-1 U. 0 U.", "18446744073709551615 0 "), "U.")
+    assert(says("-1 1 U< . 1 -1 U< . -1 1 U> . 0 -1 U> .", "0 -1 -1 0 "), "U< U>")
+    assert(says("-1 0 10 UM/MOD . .", "1844674407370955161 5 "), "UM/MOD with a top-bit dividend")
+    assert(says("0 -1 1 UM/MOD . .", "0 0 "), "a quotient wider than a cell keeps its low cell")
+    assert(says("-1 3 U.R", "18446744073709551615"), "U.R")
+
+@test("single-cell arithmetic wraps at the cell's width")
+cells_wrap()
+    assert(only("0 INVERT 1 RSHIFT INVERT 1-") == 9223372036854775807, "MIN-INT 1- wraps to MAX-INT")
+    assert(only("0 INVERT 1 RSHIFT 1+") == -9223372036854775807 - 1, "MAX-INT 1+ wraps to MIN-INT")
+    assert(only("0 INVERT 1 RSHIFT DUP +") == -2, "MAX-INT DUP +")
+    assert(only("0 INVERT 1 RSHIFT INVERT 1 -") == 9223372036854775807, "MIN-INT 1 -")
+    assert(only("0 INVERT 1 RSHIFT 2 *") == -2, "MAX-INT 2 *")
+    assert(only("0 INVERT 1 RSHIFT INVERT NEGATE") == -9223372036854775807 - 1, "NEGATE MIN-INT")
+    assert(only("0 INVERT 1 RSHIFT INVERT ABS") == -9223372036854775807 - 1, "ABS MIN-INT")
+    assert(only("0 INVERT 1 RSHIFT INVERT -1 /") == -9223372036854775807 - 1, "MIN-INT -1 /")
+    assert(only("0 INVERT 1 RSHIFT INVERT 2*") == 0, "MIN-INT 2*")
+    assert(only("1 CELLS 0 INVERT 1 RSHIFT +") == -9223372036854775807 - 1 + 7, "address-style sum wraps")
+
+@test("shifts move the cell's bits, signed and unsigned")
+cells_shifts()
+    assert(only("-1 1 RSHIFT") == 9223372036854775807, "RSHIFT is logical")
+    assert(only("-1 63 LSHIFT") == -9223372036854775807 - 1, "LSHIFT into the sign bit")
+    assert(only("1 63 LSHIFT") == -9223372036854775807 - 1, "1 63 LSHIFT")
+    assert(only("-1 64 LSHIFT") == 0, "a full-width shift leaves nothing")
+    assert(only("-8 2/") == -4, "2/ is arithmetic")
+
+@test("double-cell arithmetic over negative and top-bit cells")
+cells_doubles()
+    assert(says("-1 -1 M* . .", "0 1 "), "-1 -1 M*")
+    assert(says("-1 1 M* . .", "-1 -1 "), "-1 1 M*")
+    assert(says("-1 -1 UM* . .", "-2 1 "), "u64 max squared")
+    assert(says("-1 S>D . .", "-1 -1 "), "S>D of a negative")
+    assert(says("-1 S>D 2 SM/REM . .", "0 -1 "), "-1 S>D 2 SM/REM: remainder -1, quotient 0")
+    assert(says("-1 S>D 2 FM/MOD . .", "-1 1 "), "-1 S>D 2 FM/MOD: floored")
+    assert(says("0 INVERT 1 RSHIFT INVERT S>D -1 SM/REM . .", "-9223372036854775808 0 "), "MIN-INT -1 SM/REM wraps")
+    assert(says("0 INVERT 1 RSHIFT INVERT S>D -1 FM/MOD . .", "-9223372036854775808 0 "), "MIN-INT -1 FM/MOD wraps")
+    assert(says("0 0 S\" 18446744073709551615\" >NUMBER 2DROP . .", "0 -1 "), ">NUMBER of the largest unsigned")
+    assert(only("18446744073709551617") == 1, "a literal wider than a cell keeps its low cell")
+    assert(only("-9223372036854775808") == -9223372036854775807 - 1, "the most negative literal")
+
+@test("addresses and bytes: negative cells name the top of memory, C! keeps the low byte")
+cells_bytes()
+    assert(only("HERE 255 OVER C! C@") == 255, "C!/C@")
+    assert(only("HERE -1 OVER C! C@") == 255, "C! of -1 keeps the low byte")
+    assert(only("HERE 513 OVER C! C@") == 1, "C! of 513 keeps the low byte")
+    assert(only("-1 CELLS 2 CELLS +") == 8, "CELLS of a negative count")
+    assert(says("-191 EMIT 66 EMIT", "AB"), "EMIT keeps the low byte")
+    assert(only("-1 HERE ! HERE @") == -1, "! and @ keep a cell whole")
+    assert(only("0 INVERT 1 RSHIFT HERE ! 1 HERE +! HERE @") == -9223372036854775807 - 1, "+! wraps")
+
+// ---------------------------------------------------------------------------------------------------
 // The Hayes Core tests.
 
 @test("John Hayes's Core tests all pass")

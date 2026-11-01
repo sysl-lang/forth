@@ -16,7 +16,7 @@ text_at(a: usize, n: isize) -> []const u8 = if n > 0 then byte_at(a)[0..<usize(n
 // Pop a string's address and length.
 pop_text(vm: *Vm) -> []const u8
     val n = pop(vm)
-    val a = usize(pop(vm))
+    val a = usize.wrap(pop(vm))
 
     text_at(a, n)
 
@@ -44,17 +44,17 @@ w_search(vm: *Vm)
 
     val pattern = pop_text(vm)
     val len = pop(vm)
-    val at = usize(pop(vm))
+    val at = usize.wrap(pop(vm))
     val s = text_at(at, len)
 
     if pattern.len <= s.len
         for i in 0..<s.len - pattern.len + 1
             if s[i..<i + pattern.len] == pattern
-                push(vm, isize(at + i))
+                push(vm, isize.wrap(at + i))
                 push(vm, isize(s.len - i))
                 return push(vm, -1)
 
-    push(vm, isize(at))
+    push(vm, isize.wrap(at))
     push(vm, len)
     push(vm, 0)
 
@@ -63,7 +63,7 @@ w_dash_trailing(vm: *Vm)
     if !need(vm, 2) then return
 
     var n = pop(vm)
-    val at = usize(vm.tos)
+    val at = usize.wrap(vm.tos)
 
     while n > 0 && byte_at(at)[usize(n - 1)] == 32
         n -= 1
@@ -90,8 +90,8 @@ w_cmove(vm: *Vm)
     if !need(vm, 3) then return
 
     val n = pop(vm)
-    val to = byte_at(usize(pop(vm)))
-    val from = byte_at(usize(pop(vm)))
+    val to = byte_at(usize.wrap(pop(vm)))
+    val from = byte_at(usize.wrap(pop(vm)))
     var i: isize = 0
 
     while i < n
@@ -103,8 +103,8 @@ w_cmove_up(vm: *Vm)
     if !need(vm, 3) then return
 
     var i = pop(vm)
-    val to = byte_at(usize(pop(vm)))
-    val from = byte_at(usize(pop(vm)))
+    val to = byte_at(usize.wrap(pop(vm)))
+    val from = byte_at(usize.wrap(pop(vm)))
 
     while i > 0
         i -= 1
@@ -115,7 +115,7 @@ w_blank(vm: *Vm)
     if !need(vm, 2) then return
 
     val n = pop(vm)
-    val at = byte_at(usize(pop(vm)))
+    val at = byte_at(usize.wrap(pop(vm)))
     var i: isize = 0
 
     while i < n
@@ -203,7 +203,7 @@ w_substitute(vm: *Vm)
     if !need(vm, 4) then return
 
     val size = pop(vm)
-    val dest = usize(pop(vm))
+    val dest = usize.wrap(pop(vm))
     val src = pop_text(vm)
     val out = if size > 0 then byte_at(dest)[0..<usize(size)] else byte_at(dest)[0..<0]
     var aside: [LINE_BYTES]u8 = [0; LINE_BYTES]
@@ -211,7 +211,7 @@ w_substitute(vm: *Vm)
 
     if src.len > 0 && usize(&src[0]) < dest + out.len && dest < usize(&src[0]) + src.len
         if src.len > LINE_BYTES
-            push(vm, isize(dest))
+            push(vm, isize.wrap(dest))
             push(vm, 0)
             return push(vm, E_SUBSTITUTE)
 
@@ -251,8 +251,8 @@ w_substitute(vm: *Vm)
 
                 i = j + 1
 
-    push(vm, isize(dest))
-    push(vm, if fits then isize(at) else 0)
+    push(vm, isize.wrap(dest))
+    push(vm, if fits then isize.wrap(at) else 0)
     push(vm, if fits then count else E_SUBSTITUTE)
 
 // `UNESCAPE` ( c-addr1 u1 c-addr2 -- c-addr2 u2 ): the string copied to `c-addr2` with every `%`
@@ -260,7 +260,7 @@ w_substitute(vm: *Vm)
 w_unescape(vm: *Vm)
     if !need(vm, 3) then return
 
-    val dest = usize(pop(vm))
+    val dest = usize.wrap(pop(vm))
     val s = pop_text(vm)
     val out = byte_at(dest)
     var n: usize = 0
@@ -273,7 +273,7 @@ w_unescape(vm: *Vm)
             out[n] = b
             n += 1
 
-    push(vm, isize(dest))
+    push(vm, isize.wrap(dest))
     push(vm, isize(n))
 
 // ---------------------------------------------------------------------------------------------------

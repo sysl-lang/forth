@@ -34,7 +34,7 @@ w_noname(vm: *Vm)
     vm.def_named = false
     vm.def_xt = vm.latest_xt
     vm.latest_xt = xt
-    push(vm, isize(xt))
+    push(vm, isize.wrap(xt))
     vm.def_depth = depth_of(vm)
     vm.state = -1
 
@@ -100,7 +100,7 @@ parse_xt(vm: *Vm) -> usize
 w_tick(vm: *Vm)
     val xt = parse_xt(vm)
 
-    if vm.error == 0 then push(vm, isize(xt))
+    if vm.error == 0 then push(vm, isize.wrap(xt))
 
 compile_literal(vm: *Vm, x: isize)
     compile_code(vm, &p_lit)
@@ -109,13 +109,13 @@ compile_literal(vm: *Vm, x: isize)
 w_bracket_tick(vm: *Vm)
     val xt = parse_xt(vm)
 
-    if vm.error == 0 then compile_literal(vm, isize(xt))
+    if vm.error == 0 then compile_literal(vm, isize.wrap(xt))
 
 w_literal(vm: *Vm)
     if need(vm, 1) then compile_literal(vm, pop(vm))
 
 w_compile_comma(vm: *Vm)
-    if need(vm, 1) then compile_xt(vm, usize(pop(vm)))
+    if need(vm, 1) then compile_xt(vm, usize.wrap(pop(vm)))
 
 // An immediate word is compiled; any other gets code compiled that will compile it.
 w_postpone(vm: *Vm)
@@ -127,13 +127,13 @@ w_postpone(vm: *Vm)
     if flags_of(h) & F_IMMEDIATE != 0
         compile_xt(vm, xt_of(h))
     else
-        compile_literal(vm, isize(xt_of(h)))
+        compile_literal(vm, isize.wrap(xt_of(h)))
         compile_xt(vm, vm.xt_compile)
 
 w_recurse(vm: *Vm) = compile_xt(vm, vm.latest_xt)
 
 w_tobody(vm: *Vm)
-    if need(vm, 1) then push(vm, pop(vm) + isize(2 * CELL))
+    if need(vm, 1) then push(vm, pop(vm) +% isize(2 * CELL))
 
 // ---------------------------------------------------------------------------------------------------
 // Control structures. The control-flow stack is the data stack: an `orig` is the address of a branch
@@ -146,10 +146,10 @@ forward(vm: *Vm, code: Code) -> isize
     val at = vm.here
 
     comma(vm, 0)
-    isize(at)
+    isize.wrap(at)
 
 resolve(vm: *Vm, orig: isize)
-    cell_at(usize(orig))[0] = isize(vm.here)
+    cell_at(usize.wrap(orig))[0] = isize.wrap(vm.here)
 
 w_if(vm: *Vm) = push(vm, forward(vm, &p_0branch))
 
@@ -164,7 +164,7 @@ w_else(vm: *Vm)
 w_then(vm: *Vm)
     if need(vm, 1) then resolve(vm, pop(vm))
 
-w_begin(vm: *Vm) = push(vm, isize(vm.here))
+w_begin(vm: *Vm) = push(vm, isize.wrap(vm.here))
 
 w_until(vm: *Vm)
     if !need(vm, 1) then return
@@ -196,11 +196,11 @@ w_repeat(vm: *Vm)
 // `DO` leaves the cell its run-time half reads `LEAVE`'s target from, then the loop's start.
 w_do(vm: *Vm)
     push(vm, forward(vm, &p_do))
-    push(vm, isize(vm.here))
+    push(vm, isize.wrap(vm.here))
 
 w_qdo(vm: *Vm)
     push(vm, forward(vm, &p_qdo))
-    push(vm, isize(vm.here))
+    push(vm, isize.wrap(vm.here))
 
 close_loop(vm: *Vm, code: Code)
     if !need(vm, 2) then return
@@ -230,7 +230,7 @@ string_literal(vm: *Vm, s: []const u8)
 
     val at = transient(vm, s)
 
-    push(vm, isize(at))
+    push(vm, isize.wrap(at))
     push(vm, isize(if s.len > LINE_BYTES then LINE_BYTES else s.len))
 
 // Copy `s` to the next transient buffer, cut to fit, and answer the buffer's address.
@@ -289,7 +289,7 @@ w_bracket_char(vm: *Vm)
 w_word(vm: *Vm)
     if !need(vm, 1) then return
 
-    val delim = u8(pop(vm))
+    val delim = u8.wrap(pop(vm))
     val s = source_bytes(vm)
     var i = usize(vm.to_in)
 
@@ -310,16 +310,16 @@ w_word(vm: *Vm)
         vm.wbuf[k + 1] = s[start + k]
 
     vm.wbuf[n + 1] = 32
-    push(vm, isize(usize(&vm.wbuf[0])))
+    push(vm, isize.wrap(usize(&vm.wbuf[0])))
 
 // A parsed string as an address and a length. An empty one has no first byte to take the address
 // of, so it is answered as the place in the source where parsing stopped.
 push_text(vm: *Vm, s: []const u8)
-    push(vm, isize(if s.len == 0 then vm.src + usize(vm.to_in) else usize(&s[0])))
+    push(vm, isize.wrap(if s.len == 0 then vm.src + usize(vm.to_in) else usize(&s[0])))
     push(vm, isize(s.len))
 
 w_parse(vm: *Vm)
-    if need(vm, 1) then push_text(vm, parse(vm, u8(pop(vm))))
+    if need(vm, 1) then push_text(vm, parse(vm, u8.wrap(pop(vm))))
 
 w_parse_name(vm: *Vm) = push_text(vm, parse_name(vm))
 
@@ -328,28 +328,28 @@ w_parse_name(vm: *Vm) = push_text(vm, parse_name(vm))
 w_find(vm: *Vm)
     if !need(vm, 1) then return
 
-    val at = usize(pop(vm))
+    val at = usize.wrap(pop(vm))
     val name = byte_at(at + 1)[0..<usize(byte_at(at)[0])]
     val h = find(vm, name)
 
     if h == 0
-        push(vm, isize(at))
+        push(vm, isize.wrap(at))
         push(vm, 0)
         return
 
-    push(vm, isize(xt_of(h)))
+    push(vm, isize.wrap(xt_of(h)))
     push(vm, if flags_of(h) & F_IMMEDIATE != 0 then 1 else -1)
 
 w_evaluate(vm: *Vm)
     if !need(vm, 2) then return
 
     val len = pop(vm)
-    val addr = usize(pop(vm))
+    val addr = usize.wrap(pop(vm))
 
     evaluate_at(vm, addr, len)
 
 w_source(vm: *Vm)
-    push(vm, isize(vm.src))
+    push(vm, isize.wrap(vm.src))
     push(vm, vm.src_len)
 
 w_source_id(vm: *Vm) = push(vm, vm.src_id)
@@ -361,11 +361,11 @@ w_refill(vm: *Vm)
 
     push(vm, flag(refill_console(vm)))
 
-w_to_in(vm: *Vm) = push(vm, isize(usize(&vm.to_in)))
+w_to_in(vm: *Vm) = push(vm, isize.wrap(usize(&vm.to_in)))
 
-w_state(vm: *Vm) = push(vm, isize(usize(&vm.state)))
+w_state(vm: *Vm) = push(vm, isize.wrap(usize(&vm.state)))
 
-w_base(vm: *Vm) = push(vm, isize(usize(&vm.base)))
+w_base(vm: *Vm) = push(vm, isize.wrap(usize(&vm.base)))
 
 w_decimal(vm: *Vm)
     vm.base = 10
@@ -377,19 +377,19 @@ w_hex(vm: *Vm)
 w_to_number(vm: *Vm)
     if !need(vm, 4) then return
 
-    val len = usize(pop(vm))
-    val addr = usize(pop(vm))
+    val len = usize.wrap(pop(vm))
+    val addr = usize.wrap(pop(vm))
     val ud = pop_ud(vm)
     val (n, used) = convert(ud, byte_at(addr)[0..<len], vm.base)
 
     push_ud(vm, n)
-    push(vm, isize(addr + used))
-    push(vm, isize(len - used))
+    push(vm, isize.wrap(addr + used))
+    push(vm, isize.wrap(len - used))
 
 // ---------------------------------------------------------------------------------------------------
 // The dictionary and memory, as words.
 
-w_here(vm: *Vm) = push(vm, isize(vm.here))
+w_here(vm: *Vm) = push(vm, isize.wrap(vm.here))
 
 w_allot(vm: *Vm)
     if !need(vm, 1) then return
@@ -398,8 +398,8 @@ w_allot(vm: *Vm)
 
     if n >= 0
         if reserve(vm, usize(n)) then vm.here += usize(n)
-    else if vm.here - vm.lo >= usize(0 - n)
-        vm.here -= usize(0 - n)
+    else if vm.here - vm.lo >= usize.wrap(0 -% n)
+        vm.here -= usize.wrap(0 -% n)
     else
         fail(vm, E_DICTFULL)
 
@@ -407,18 +407,18 @@ w_comma(vm: *Vm)
     if need(vm, 1) then comma(vm, pop(vm))
 
 w_ccomma(vm: *Vm)
-    if need(vm, 1) then ccomma(vm, u8(pop(vm)))
+    if need(vm, 1) then ccomma(vm, u8.wrap(pop(vm)))
 
 w_align(vm: *Vm) = align_here(vm)
 
 w_aligned(vm: *Vm)
-    if need(vm, 1) then push(vm, isize(aligned(usize(pop(vm)))))
+    if need(vm, 1) then push(vm, isize.wrap(aligned(usize.wrap(pop(vm)))))
 
 w_cells(vm: *Vm)
-    if need(vm, 1) then push(vm, pop(vm) * isize(CELL))
+    if need(vm, 1) then push(vm, pop(vm) *% isize(CELL))
 
 w_cellplus(vm: *Vm)
-    if need(vm, 1) then push(vm, pop(vm) + isize(CELL))
+    if need(vm, 1) then push(vm, pop(vm) +% isize(CELL))
 
 // A character is a byte, so `CHARS` changes nothing.
 w_chars(vm: *Vm)
@@ -427,15 +427,15 @@ w_chars(vm: *Vm)
 w_count(vm: *Vm)
     if !need(vm, 1) then return
 
-    val at = usize(pop(vm))
+    val at = usize.wrap(pop(vm))
 
-    push(vm, isize(at + 1))
+    push(vm, isize.wrap(at + 1))
     push(vm, isize(byte_at(at)[0]))
 
 w_2fetch(vm: *Vm)
     if !need(vm, 1) then return
 
-    val at = usize(pop(vm))
+    val at = usize.wrap(pop(vm))
 
     push(vm, cell_at(at + CELL)[0])
     push(vm, cell_at(at)[0])
@@ -443,7 +443,7 @@ w_2fetch(vm: *Vm)
 w_2store(vm: *Vm)
     if !need(vm, 3) then return
 
-    val at = usize(pop(vm))
+    val at = usize.wrap(pop(vm))
 
     cell_at(at)[0] = pop(vm)
     cell_at(at + CELL)[0] = pop(vm)
@@ -451,9 +451,9 @@ w_2store(vm: *Vm)
 w_fill(vm: *Vm)
     if !need(vm, 3) then return
 
-    val c = u8(pop(vm))
+    val c = u8.wrap(pop(vm))
     val n = pop(vm)
-    val at = usize(pop(vm))
+    val at = usize.wrap(pop(vm))
 
     if n <= 0 then return
 
@@ -467,8 +467,8 @@ w_move(vm: *Vm)
     if !need(vm, 3) then return
 
     val n = pop(vm)
-    val to = byte_at(usize(pop(vm)))
-    val from = byte_at(usize(pop(vm)))
+    val to = byte_at(usize.wrap(pop(vm)))
+    val from = byte_at(usize.wrap(pop(vm)))
 
     if n <= 0 then return
 
@@ -548,8 +548,8 @@ w_mstar(vm: *Vm)
 w_umstar(vm: *Vm)
     if !need(vm, 2) then return
 
-    val b = UDCell(usize(pop(vm)))
-    val a = UDCell(usize(pop(vm)))
+    val b = UDCell(usize.wrap(pop(vm)))
+    val a = UDCell(usize.wrap(pop(vm)))
 
     push_ud(vm, a * b)
 
@@ -557,13 +557,13 @@ w_umstar(vm: *Vm)
 w_um_slash_mod(vm: *Vm)
     if !need(vm, 3) then return
 
-    val u = UDCell(usize(pop(vm)))
+    val u = UDCell(usize.wrap(pop(vm)))
     val ud = pop_ud(vm)
 
     if u == 0 then return fail(vm, E_DIVZERO)
 
-    push(vm, isize(ud % u))
-    push(vm, isize(ud / u))
+    push(vm, isize.wrap(ud % u))
+    push(vm, isize.wrap(ud / u))
 
 // Symmetric division of a double by a single: the quotient rounds toward zero.
 sym_divide(vm: *Vm, d: DCell, n: DCell)
@@ -571,11 +571,11 @@ sym_divide(vm: *Vm, d: DCell, n: DCell)
 
     if n == -1
         push(vm, 0)
-        push(vm, isize(0 - d))
+        push(vm, isize.wrap(0 -% d))
         return
 
-    push(vm, isize(d % n))
-    push(vm, isize(d / n))
+    push(vm, isize.wrap(d % n))
+    push(vm, isize.wrap(d / n))
 
 // Floored division: the quotient rounds toward negative infinity, and the remainder takes the
 // divisor's sign.
@@ -584,7 +584,7 @@ floor_divide(vm: *Vm, d: DCell, n: DCell)
 
     if n == -1
         push(vm, 0)
-        push(vm, isize(0 - d))
+        push(vm, isize.wrap(0 -% d))
         return
 
     var q = d / n
@@ -594,8 +594,8 @@ floor_divide(vm: *Vm, d: DCell, n: DCell)
         q -= 1
         r += n
 
-    push(vm, isize(r))
-    push(vm, isize(q))
+    push(vm, isize.wrap(r))
+    push(vm, isize.wrap(q))
 
 w_sm_slash_rem(vm: *Vm)
     if !need(vm, 3) then return
@@ -635,13 +635,13 @@ w_star_slash(vm: *Vm)
 // Output.
 
 w_emit(vm: *Vm)
-    if need(vm, 1) then vm.con.emit(u8(pop(vm)))
+    if need(vm, 1) then vm.con.emit(u8.wrap(pop(vm)))
 
 w_type(vm: *Vm)
     if !need(vm, 2) then return
 
     val n = pop(vm)
-    val at = usize(pop(vm))
+    val at = usize.wrap(pop(vm))
 
     if n > 0 then vm.con.send(byte_at(at)[0..<usize(n)])
 
@@ -701,11 +701,11 @@ w_sharpgreater(vm: *Vm)
 
     pop(vm)
     pop(vm)
-    push(vm, isize(vm.hld))
+    push(vm, isize.wrap(vm.hld))
     push(vm, isize(hold_end(vm) - vm.hld))
 
 w_hold(vm: *Vm)
-    if need(vm, 1) then hold_char(vm, u8(pop(vm)))
+    if need(vm, 1) then hold_char(vm, u8.wrap(pop(vm)))
 
 w_sign(vm: *Vm)
     if need(vm, 1) && pop(vm) < 0 then hold_char(vm, u8('-'))
@@ -748,7 +748,7 @@ show_right(vm: *Vm, magnitude: UDCell, negative: bool, width: isize)
     vm.con.send(digits)
 
 // The magnitude of a signed cell, which for the most negative cell is one more than the largest.
-magnitude_of(n: isize) -> UDCell = if n < 0 then UDCell(usize(0 - n)) else UDCell(usize(n))
+magnitude_of(n: isize) -> UDCell = if n < 0 then UDCell(usize.wrap(0 -% n)) else UDCell(usize(n))
 
 w_dot(vm: *Vm)
     if !need(vm, 1) then return
@@ -758,7 +758,7 @@ w_dot(vm: *Vm)
     show(vm, magnitude_of(n), n < 0)
 
 w_udot(vm: *Vm)
-    if need(vm, 1) then show(vm, UDCell(usize(pop(vm))), false)
+    if need(vm, 1) then show(vm, UDCell(usize.wrap(pop(vm))), false)
 
 // `.S`: the stack, deepest first, without changing it.
 w_dots(vm: *Vm)
@@ -788,7 +788,7 @@ w_accept(vm: *Vm)
     if !need(vm, 2) then return
 
     val n = pop(vm)
-    val at = usize(pop(vm))
+    val at = usize.wrap(pop(vm))
 
     if n <= 0
         push(vm, 0)
