@@ -1,5 +1,6 @@
 module sh.sysl.forth.host
 @tests
+#if feature_host
 
 import sh.sysl.forth.{Vm, boot, depth_of, interpret_line}
 import sh.sysl.repl.{Ended, editor, mock_terminal, no_hint, run_with}
@@ -134,3 +135,4 @@ repl_ctrl_d()
     assert(r.ended == Ended.EndOfInput, "EndOfInput")
     assert(!r.text.contains("2  ok"), r.text)
     assert(depth_of(&vm) == 0, "the stack")
+#endif

@@ -7,6 +7,7 @@
 // `BYE` ends the program at once. A fault is reported and interpretation goes on with the next line,
 // with the dictionary as it was.
 
+#if feature_host
 import sh.sysl.forth.{Vm, boot, quit}
 import sh.sysl.forth.host.{HostConsole, complete_word, eval_line, forth_prompts, keyboard_console, script_console_of, session}
 import sh.sysl.repl.no_hint
@@ -48,3 +49,4 @@ main(args: []string)
                 flush()
                 print(s"forth: cannot read ${args[i]}: ${e}")
                 exit(1)
+#endif

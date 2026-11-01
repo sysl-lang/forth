@@ -1,4 +1,5 @@
 module sh.sysl.forth.host
+#if feature_host
 
 import sh.sysl.forth.Console
 import sysl.io.{FdReader, stdin}
@@ -98,3 +99,4 @@ impl Console for HostConsole
 
         self.at = if i < self.script.len then i + 1 else i
         isize(n)
+#endif

@@ -1,5 +1,6 @@
 module sh.sysl.forth.host
 @tests
+#if feature_host
 
 // The hosted console's own half: lines out of a file's text. Standard input and output are the
 // library's, and `forth < file` is what exercises them.
@@ -22,3 +23,4 @@ host_refill_cuts_long_lines()
 
     assert(c.refill(line[..]) == 4 && line[..] == "abcd".bytes, "cut")
     assert(c.refill(line[..]) == 4 && line[..] == "next".bytes, "the next line is whole")
+#endif

@@ -1,6 +1,8 @@
 module sh.sysl.forth
 @no_alloc
 
+import sysl.raw.ptr_cast
+
 // The inner interpreter: direct threading through guaranteed tail calls.
 //
 // **A thread is a run of cells, and each cell is the address of a primitive.** A primitive does its

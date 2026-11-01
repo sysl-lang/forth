@@ -1,6 +1,8 @@
 module sh.sysl.forth
 @no_alloc
 
+import sysl.raw.ptr_cast
+
 // The dictionary and the text interpreter.
 //
 // **A header** is laid out in the dictionary as

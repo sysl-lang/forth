@@ -1,6 +1,8 @@
 module sh.sysl.forth
 @no_alloc
 
+import sysl.raw.ptr_cast
+
 // The machine a Forth program runs on: two stacks, a dictionary, the interpreter's registers and the
 // console it talks through.
 //
