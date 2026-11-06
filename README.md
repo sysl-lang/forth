@@ -11,7 +11,7 @@ could not say one of those directly, the gap goes to sysl to be fixed rather tha
 
 ```
 $ forth
-forth 0.1.0 -- BYE or Ctrl-D to leave
+forth 0.1.1 -- BYE or Ctrl-D to leave
 : SQUARE  DUP * ;
  ok
 7 SQUARE .
@@ -182,7 +182,7 @@ host console and the REPL. A board firmware depends on the core alone, in its `s
 
 ```
 dependencies {
-  forth { git = "github.com/sysl-lang/forth", version = "0.1.0", default_features = false }
+  forth { git = "github.com/sysl-lang/forth", version = "0.1.1", default_features = false }
 }
 ```
 
