@@ -59,7 +59,7 @@ input never starts the REPL: `forth < file.fs` reads the file as it always has, 
 
 ## The words
 
-218 of them:
+297 of them:
 
 - **Stack:** `DUP ?DUP DROP SWAP OVER ROT NIP TUCK 2DUP 2DROP 2SWAP 2OVER >R R> R@ DEPTH PICK ROLL`
 - **Arithmetic and logic:** `+ - * / MOD /MOD */ */MOD AND OR XOR INVERT NEGATE ABS 1+ 1- 2* 2/
@@ -86,8 +86,18 @@ input never starts the REPL: `forth < file.fs` reads the file as it always has, 
   [IF] [ELSE] [THEN]`. `ASSEMBLER`, `CODE`, `;CODE` and `EDITOR` are left out: what they do is the
   implementation's own (an assembler for the host's instruction set, a text editor), and there is
   neither here.
+- **Floating-Point:** `>FLOAT D>F F! F* F+ F- F/ F0< F0= F< F>D F@ FALIGN FALIGNED FCONSTANT FDEPTH
+  FDROP FDUP FLITERAL FLOAT+ FLOATS FLOOR FMAX FMIN FNEGATE FOVER FROT FROUND FSWAP FVARIABLE
+  REPRESENT`
+- **Floating-Point Extension:** `DF! DF@ DFALIGN DFALIGNED DFFIELD: DFLOAT+ DFLOATS F** F. F>S FABS
+  FACOS FACOSH FALOG FASIN FASINH FATAN FATAN2 FATANH FCOS FCOSH FE. FEXP FEXPM1 FFIELD: FLN FLNP1 FLOG
+  FS. FSIN FSINCOS FSINH FSQRT FTAN FTANH FTRUNC FVALUE F~ PRECISION S>F SET-PRECISION SF! SF@ SFALIGN
+  SFALIGNED SFFIELD: SFLOAT+ SFLOATS`
 
-The text interpreter also reads `#123`, `$FF`, `%101` and `'c'`, Forth 2012's number prefixes.
+The text interpreter also reads `#123`, `$FF`, `%101` and `'c'`, Forth 2012's number prefixes; a
+number with a point after it, `1.` or `-$FF.`, as a double cell; and, while `BASE` is decimal, a float:
+`1E`, `1.5E3`, `-2.5e-1`. In any other base `1E` is a number like any other. A `(` comment with no `)`
+on its line goes on into the next lines of the console or file, as the File-Access word set has it.
 
 **Division is symmetric**: `/`, `MOD`, `/MOD`, `*/` and `*/MOD` round the quotient toward zero, as C
 does, and the remainder takes the dividend's sign. Forth 2012 leaves the choice to the
@@ -101,7 +111,21 @@ the target's address width with `#if ptr16` / `ptr32` / `ptr64`:
 | 32 bits (`thumb`, `riscv32`, `wasm32`, `x86`) | `isize`, 4 bytes | `i64` |
 | 16 bits (`craft`) | `isize`, 2 bytes | `i32` |
 
-`ENVIRONMENT?` answers false to every query. There is no `DOUBLE` word set and no `WORDLIST`s yet, so
+**Floats** are IEEE 754 doubles (`real`) on every target, eight bytes whatever a cell is, on a stack of
+their own **64 deep**: a word short of floats is `-45`, one pushing past the room `-44`, a fault empties
+it as it empties the data stack, and `CATCH` puts its depth back. `FALIGNED` aligns to eight bytes and
+`SFALIGNED` to four; `F@` is `DF@`, and `SF@`/`SF!` widen from and round to single precision. The
+arithmetic is IEEE's (`1E 0E F/` is an infinity, not a fault) and the functions are `sysl.math`'s.
+`REPRESENT`'s digits come from `sysl.fmt.write_real` under `%.*e` — the exact value's digits, rounded
+half to even — and `F.`, `FS.` and `FE.` lay out the same digits, `PRECISION` of them (6 to start):
+`F.` is fixed point with the zeros after the last significant digit left off (`1E3 F.` is `1000. `,
+`1E-10 F.` is `0.0000000001 `), `FS.` is `1.00000E3 ` and `FE.` puts one to three digits before the
+point (`20.0000E0 `). An infinity is `inf` or `-inf` and a NaN `nan`; `REPRESENT` answers false for
+both, with `INF` or `NAN` in the buffer. `>FLOAT` reads with `sysl.text.parse_real`, correctly
+rounded, after rewriting the Forth exponent (`1D2`, `1+2`, `1E`) to the form that reads.
+
+`ENVIRONMENT?` knows `FLOATING`, `FLOATING-EXT`, `FLOATING-STACK` and `MAX-FLOAT`, and answers false
+to every other query. There is no `DOUBLE` word set and no `WORDLIST`s yet, so
 there is one word list: a name token is a header's address, and `TRAVERSE-WORDLIST` walks the whole
 dictionary, newest first, whatever word list it is given.
 
@@ -163,7 +187,9 @@ dependencies {
 ```
 
 and supplies a `Console` of its own. `sysl build-c . --target thumb-freestanding-softfp` on a program
-that depends on it this way builds the core with no operating system under it.
+that depends on it this way builds the core with no operating system under it. The float words reach
+the C library's maths functions (`sin`, `pow`, `expm1`, …) through `sysl.math`, so the firmware links
+`-lm`; newlib's, from the Arm GNU Toolchain, has every one they use.
 
 **Cells are two's complement.** Cell arithmetic (`+ - * 1+ 1- NEGATE ABS`, `+!`, `+LOOP`, `CELLS`)
 wraps, and a cell read as unsigned or as an address (`U. U< U> RSHIFT`, `C!`, `@`) is its bit
@@ -289,7 +315,7 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
 
 ## Tests
 
-`sysl test .` runs 105 tests (91 with `--no-default-features`, which leaves out the host module's):
+`sysl test .` runs 134 tests (120 with `--no-default-features`, which leaves out the host module's):
 
 - **The Hayes Core tests: 638 of 638 pass.** `tests/tester.fr` and `tests/core.fr` are John Hayes's
   files from [gerryjackson/forth2012-test-suite](https://github.com/gerryjackson/forth2012-test-suite)
@@ -320,6 +346,28 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
   (`src/errorreport.fth`, `d348c8d5d2ad1793b118f83dda6f79d4c74c3d7abd973e8ad7d8841b8243366d`). A
   word-set file hands its error count to `errorreport.fth`'s `SET-ERROR-COUNT` at its end, so the
   test reads it from there, and checks the total over every file too.
+- **The suite's floating-point files**, from `src/fp/` at the same commit, unchanged, each run by a
+  sysl test after the suite's own floating-point tester, `tests/fp/ttester.fs`
+  (`src/fp/ttester.fs`, `76948bb8f1bb343a488aa5fb744b115f9026caf8eebb142906bae6b29e6b067b`), and
+  `tests/fp/count.fs`, which counts the tests and ttester's errors and defines the two words the
+  files use that are not this system's: `F>`, which is no standard word, and `D>S`, from the
+  Double-Number word set. Each test asserts the number of tests, zero errors, that no line faulted
+  and that the floating-point stack ends empty:
+
+  | file | SHA-256 | tests | errors |
+  |---|---|---:|---:|
+  | `tests/fp/fatan2-test.fs` | `861de3aba5166be5333c241d3f9f810ad017d71f2e0b6d0a352cdb98bc00a1ea` | 39 | 0 |
+  | `tests/fp/ieee-arith-test.fs` | `f6d07b22628dabbc2829283888ab6a71f1e8d26d72c14050862ac4625d30190d` | 172 | 0 |
+  | `tests/fp/ieee-fprox-test.fs` | `9d0683894cc1545f0259e717f97d21471dfcdaddc7a508bb8d5ca2b302697be8` | 242 | 0 |
+  | `tests/fp/fpzero-test.4th` | `59906ee261053662c21d2bec7780c277c9159731e85d88b8b94282c609e7d292` | 12 | 0 |
+  | `tests/fp/fpio-test.4th` | `84ffb3cdc67f40a5a24a4bf4eed2f09ca48bbd9a61f3823421b960d76ec2d82a` | 110 | 0 |
+  | `tests/fp/to-float-test.4th` | `cd9af313a9bdef25ba67d2dfbffa26191721d74a193faf79c48ed5dafbaed639` | 35 | 0 |
+  | `tests/fp/ak-fp-test.fth` | `653873d89fe3fadc1d72da4c8874566bfb23c86d5620ee92e6852b9cf0733515` | 214 | 0 |
+  | `tests/fp/paranoia.4th` | `8d5185dbd4a957b86946585cdf9b043143ebe58ef276add73ba975800e365f9c` | — | 0 |
+
+  `paranoia.4th` is Kahan's diagnosis rather than a list of tests; the test asserts that its failure,
+  serious-defect, defect and flaw counts are all zero and that it calls the arithmetic `Excellent!`.
+  `ak-fp-test.fth`'s `F.`, `FE.` and `FS.` lines are shown for a reader to compare, not counted.
 - The inner interpreter: a hand-built thread, a fault leaving through `run`, nested colon
   definitions, ten million loop iterations in one native frame, `EXECUTE` of every kind of word,
   `DOES>`, `LEAVE`/`UNLOOP`, `+LOOP` across zero.
@@ -344,6 +392,15 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
   an older word of the name, and refusing a built-in; nested `[IF]` across lines and a missing
   `[THEN]`; `N>R` faults; `SYNONYM` of an immediate word; `TRAVERSE-WORDLIST` stopping early; and
   `NAME>COMPILE`.
+- The Floating-Point words where the suite does not reach: float literals and what is not one, `1E`
+  in hexadecimal, double-cell literals, `>FLOAT`'s `D` and sign-only exponents; `F.` of zero, `-0`,
+  the infinities, a NaN, huge and tiny and subnormal values; `PRECISION` at 1, 3, 6 and 17, ties to
+  even; `REPRESENT` rounding into the exponent, of `-0` and of an infinity; `SEE` of a float literal;
+  underflow (`-45`) and overflow (`-44`) of the floating-point stack and `CATCH` putting its depth
+  back; the two stacks kept apart and a fault emptying both; `F>S`, `F>D`, `FTRUNC`, `FROUND`,
+  `FATANH`; float alignment and sizes, an `FVARIABLE` after an odd `HERE`; `FCONSTANT`, `FVALUE` and
+  `TO` now and compiled; the field words' offsets; `SF!` rounding; the `ENVIRONMENT?` queries; and a
+  `(` comment across lines.
 - The host console's line splitting, and `interpret_line`'s answers.
 - The REPL, driven through `repl`'s `MockTerminal` with scripted keys and checked against the exact
   bytes sent to the terminal: ` ok` after a line, a definition across two lines at the continuation
