@@ -180,6 +180,55 @@ cell; then the code cell (the execution token is its address), a `does` cell, an
 `>BODY` is two cells past the token for every word. The data and return stacks are arrays in the
 machine. Addresses are real machine addresses: `@` reads whatever the number names.
 
+## Words written in sysl
+
+A board adds a word written in sysl — a DMA kick, a codec register write, a display blit — with
+`define_native` after `boot`. The word is a plain function of the machine, so defining one allocates
+nothing:
+
+```sysl
+import sh.sysl.forth.{Vm, define_native, need, pop, pop_addr, push, cell_at, throw}
+
+// `REG!` ( x addr -- ): a register write.
+reg_store(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val addr = pop_addr(vm)
+
+    cell_at(addr)[0] = pop(vm)
+
+// `BLIT` ( x y -- ): draws, or throws 1 when the point is off the screen.
+blit(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val y = pop(vm)
+    val x = pop(vm)
+
+    if x < 0 || x >= 480 || y < 0 || y >= 272 then return throw(vm, 1)
+
+    draw_point(x, y)
+
+// In the firmware's start, after `boot(&machine, …)`:
+    define_native(&machine, "REG!", &reg_store)
+    define_native(&machine, "BLIT", &blit)
+```
+
+From then on it is a word like any built-in: run at the prompt, compiled into a colon definition,
+ticked, `EXECUTE`d, found by `FIND`, listed by `WORDS`, described by `SEE`, and redefined by a later
+definition of the same name. `immediate = true` makes it `IMMEDIATE`.
+
+- **The stack** is `need(vm, n)` before popping `n` items — it records a stack underflow and answers
+  false, and the word returns — then `pop`, `push` and `pop_addr`. `cell_at` and `byte_at` reach
+  memory.
+- **A fault** is `throw(vm, code)` and a return: the nearest `CATCH` answers the code, or the outer
+  interpreter reports it, exactly as for `THROW`.
+- **The capacity is the dictionary.** A native word costs a header and one cell of it. `define_native`
+  answers 0, or the code `THROW` would use for a refusal — -8 when the dictionary is full, -16 for an
+  empty name, -19 for one over 31 bytes — and leaves neither a header nor a fault behind.
+- **Dispatch** is the one built-in words written in sysl already use: the word's code is `doslow`,
+  which saves the stack registers into the machine, calls the function through the cell after the
+  token, and carries on with `NEXT` unless it faulted. The primitives are untouched.
+
 ## The threading model, and what `NEXT` compiles to
 
 **Direct threading through guaranteed tail calls.** A thread is a run of cells, each the address of a
@@ -240,7 +289,7 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
 
 ## Tests
 
-`sysl test .` runs 94 tests (80 with `--no-default-features`, which leaves out the host module's):
+`sysl test .` runs 105 tests (91 with `--no-default-features`, which leaves out the host module's):
 
 - **The Hayes Core tests: 638 of 638 pass.** `tests/tester.fr` and `tests/core.fr` are John Hayes's
   files from [gerryjackson/forth2012-test-suite](https://github.com/gerryjackson/forth2012-test-suite)

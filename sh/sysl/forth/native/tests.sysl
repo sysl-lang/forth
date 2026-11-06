@@ -1,0 +1,168 @@
+module sh.sysl.forth.native
+@no_alloc
+@tests
+
+import sh.sysl.forth.{Vm, ScriptConsole, boot, script_console, written, quit, evaluate, find, depth_of}
+import sh.sysl.forth.{define_native, need, pop, push, pop_addr, cell_at, throw}
+import sh.sysl.forth.{CELL, E_DICTFULL, E_NAMELEN, E_ZERONAME}
+
+// Words written in sysl by a program outside the core, through the API a board uses: defined after
+// `boot`, then used from Forth like any other word.
+
+var region: [65536]usize
+var vm: Vm
+var out: [16384]u8
+var con: ScriptConsole
+
+// `SQ` ( n -- n*n ).
+square(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val n = pop(vm)
+
+    push(vm, n * n)
+
+// `CUBE` ( n -- n*n*n ), which a test makes the newer `SQ`.
+cube(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val n = pop(vm)
+
+    push(vm, n * n * n)
+
+// `NOW`, immediate: says so while a definition is being compiled.
+now(vm: *Vm) = vm.con.send(if vm.state != 0 then "compiling ".bytes else "interpreting ".bytes)
+
+// `BOOM` ( -- ) throws 99.
+boom(vm: *Vm) = throw(vm, 99)
+
+// `POKE` ( x addr -- ) and `PEEK` ( addr -- x ): memory through `cell_at`.
+poke(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val addr = pop_addr(vm)
+
+    cell_at(addr)[0] = pop(vm)
+
+peek(vm: *Vm)
+    if !need(vm, 1) then return
+
+    push(vm, cell_at(pop_addr(vm))[0])
+
+// `GROW` defines `SQ` from inside a word, and `GROW-BAD` tries a name that is too long, passing the
+// refusal on as a `THROW`.
+grow(vm: *Vm) = throw(vm, define_native(vm, "SQ", &square))
+
+grow_bad(vm: *Vm) = throw(vm, define_native(vm, "A-NAME-THAT-IS-FAR-TOO-LONG-FOR-A-HEADER", &square))
+
+// A machine with the native words defined, reading `text`.
+start(text: string)
+    con = script_console(text.bytes, "".bytes, out[..])
+    boot(&vm, usize(&region[0]), region.len * CELL, &con)
+    assert(define_native(&vm, "SQ", &square) == 0, "SQ")
+    assert(define_native(&vm, "NOW", &now, immediate = true) == 0, "NOW")
+    assert(define_native(&vm, "BOOM", &boom) == 0, "BOOM")
+    assert(define_native(&vm, "POKE", &poke) == 0, "POKE")
+    assert(define_native(&vm, "PEEK", &peek) == 0, "PEEK")
+    assert(define_native(&vm, "GROW", &grow) == 0, "GROW")
+    assert(define_native(&vm, "GROW-BAD", &grow_bad) == 0, "GROW-BAD")
+
+says(text: string, expected: string) -> bool
+    start(text)
+    quit(&vm)
+    written(&con) == expected.bytes
+
+@test("a native word runs interactively, and in any case")
+native_interactive()
+    assert(says("7 SQ . -3 sq .", "49 9 "), "interactive")
+
+@test("a native word compiles into a colon definition, and EXECUTE and ' reach it")
+native_compiled()
+    assert(says(": QUAD SQ SQ ; 3 QUAD .", "81 "), "compiled")
+    assert(says("5 ' SQ EXECUTE .", "25 "), "ticked")
+    assert(says(": T ['] SQ EXECUTE ; 6 T .", "36 "), "bracket-ticked")
+    assert(says(": T POSTPONE SQ ; IMMEDIATE : U T ; 4 U .", "16 "), "postponed")
+
+@test("FIND, SEE and WORDS know a native word, and its immediacy")
+native_introspection()
+    assert(says("BL WORD SQ FIND . DROP BL WORD NOW FIND . DROP", "-1 1 "), "FIND")
+    assert(says("SEE SQ SEE NOW", "SQ is written in sysl\nNOW is written in sysl, and immediate\n"), "SEE")
+    start("WORDS")
+    quit(&vm)
+
+    val listed = written(&con)
+    val first = "GROW-BAD GROW PEEK POKE BOOM NOW SQ ".bytes
+
+    assert(listed.len > first.len && listed[0..<first.len] == first, "newest first")
+
+@test("an immediate native word runs while compiling, and a plain one is compiled")
+native_immediate()
+    assert(says(": T NOW 1 ; T . NOW", "compiling 1 interpreting "), "immediate")
+    assert(says(": T [ 2 SQ ] LITERAL ; T .", "4 "), "run between brackets")
+
+@test("a native word's THROW is caught by CATCH, or reported, like any other")
+native_throws()
+    assert(says("' BOOM CATCH .", "99 "), "caught")
+    assert(says("1 2 : T 3 BOOM 4 ; ' T CATCH . . . DEPTH .", "99 2 1 0 "), "caught through a definition, depth restored")
+    assert(says("1 BOOM 5 .\n6 . DEPTH .", "uncaught exception 99\n6 0 "), "uncaught: reported, the line dropped")
+
+@test("a stack underflow inside a native word stops the thread and touches nothing")
+native_underflow()
+    assert(says("SQ\n7 .", "stack underflow\n7 "), "interactive")
+    assert(says(": T SQ 99 . ; T\n8 .", "stack underflow\n8 "), "the 99 never prints")
+    assert(says("5 POKE\n9 .", "stack underflow\n9 "), "two wanted, one there")
+    assert(says("' SQ CATCH . DEPTH .", "-4 0 "), "caught as -4")
+
+@test("a native word reads and writes memory")
+native_memory()
+    assert(says("VARIABLE V 42 V POKE V @ .", "42 "), "POKE then @")
+    assert(says("VARIABLE V -7 V ! V PEEK .", "-7 "), "! then PEEK")
+    assert(says("CREATE A 1 , 2 , 3 , A CELL+ PEEK .", "2 "), "a cell of an array")
+
+@test("a native word is redefined by another, and by Forth, and old definitions keep the old one")
+native_redefined()
+    start("")
+    assert(define_native(&vm, "SQ", &square) == 0, "again")
+
+    evaluate(&vm, ": OLD SQ ;".bytes)
+    assert(define_native(&vm, "SQ", &cube) == 0, "SQ is CUBE now")
+    evaluate(&vm, "2 SQ 2 OLD".bytes)
+    assert(vm.error == 0 && depth_of(&vm) == 2, "two results")
+    assert(pop(&vm) == 4 && pop(&vm) == 8, "OLD squares, SQ cubes")
+
+    assert(says(": SQ 0 ; 3 SQ .", "0 "), "a Forth definition shadows it")
+
+@test("a refused name answers its code and leaves the dictionary and the fault as they were")
+native_refused_names()
+    start("")
+
+    val here = vm.here
+    val latest = vm.latest
+
+    assert(define_native(&vm, "", &square) == E_ZERONAME, "empty")
+    assert(define_native(&vm, "A-NAME-THAT-IS-FAR-TOO-LONG-FOR-A-HEADER", &square) == E_NAMELEN, "too long")
+    assert(vm.error == 0 && vm.here == here && vm.latest == latest, "nothing left behind")
+    assert(define_native(&vm, "A-NAME-OF-EXACTLY-31-BYTES-LONG", &square) == 0, "31 bytes is the most")
+
+@test("a full dictionary refuses a native word with -8, and the machine carries on")
+native_dictionary_full()
+    start("")
+    push(&vm, isize(vm.hi - vm.here) - 16)
+    evaluate(&vm, "ALLOT".bytes)
+    assert(vm.error == 0, "the ALLOT fitted")
+
+    val here = vm.here
+    val latest = vm.latest
+
+    assert(define_native(&vm, "CUBE", &cube) == E_DICTFULL, "no room for the header")
+    assert(vm.error == 0 && vm.here == here && vm.latest == latest, "nothing left behind")
+    assert(find(&vm, "CUBE".bytes) == 0, "not findable")
+
+    evaluate(&vm, "3 SQ".bytes)
+    assert(vm.error == 0 && pop(&vm) == 9, "the old words still run")
+
+@test("a native word may define another, and passes a refusal on as a THROW")
+native_defines_native()
+    assert(says(": SQ 0 ; GROW 3 SQ .", "9 "), "GROW brings the sysl SQ back")
+    assert(says("' GROW-BAD CATCH .", "-19 "), "the refusal is the THROW")
+    assert(says("GROW-BAD\n2 .", "definition name too long\n2 "), "reported")

@@ -1,0 +1,44 @@
+module sh.sysl.forth
+@no_alloc
+
+// Words a program writes in sysl: a board's DMA kick, a codec's register write, a display blit.
+//
+// **A native word is made exactly as the built-in words written in sysl are**: a header whose code is
+// `doslow` and whose body holds the function. So it is found, compiled, `EXECUTE`d, ticked, `SEE`n,
+// listed and redefined as they are, and nothing about the primitives changes to make room for it.
+//
+// **The function works on the machine's saved registers** through the same calls the built-ins use:
+// `need(vm, n)` before popping `n` items (it records a stack underflow and answers false), `pop` and
+// `push`, `pop_addr` for an address, `cell_at` and `byte_at` for memory, and `throw(vm, code)` to stop
+// with a code the nearest `CATCH` answers. After a fault it simply returns.
+
+// A word written in sysl: a plain function of the machine, so that a table of them needs no closure
+// and no allocation.
+type Native = *extern(*Vm) -> unit
+
+// Define `name` as `word`, `IMMEDIATE` if `immediate` says so. Answers 0, or the code `THROW` would
+// have used for the refusal — a name that is empty (-16) or longer than 31 bytes (-19), or a
+// dictionary with no room for the header (-8) — and leaves nothing behind for a refused one, not even
+// the fault: a native word that defines another passes a refusal on with `throw(vm, ...)`.
+//
+// The dictionary is the only capacity there is: a native word costs a header and one cell.
+define_native(vm: *Vm, name: string, word: Native, immediate: bool = false) -> isize
+    val prior = vm.error
+
+    vm.error = 0
+
+    if !header(vm, name.bytes, &doslow)
+        val code = vm.error
+
+        vm.error = prior
+        return code
+
+    comma_u(vm, usize(word))
+
+    if immediate then set_flag(vm.latest, F_IMMEDIATE)
+
+    vm.error = prior
+    0
+
+// Pop a cell as an address, for `cell_at` and `byte_at`. Like `pop`, it trusts a `need` before it.
+pop_addr(vm: *Vm) -> usize = usize.wrap(pop(vm))
