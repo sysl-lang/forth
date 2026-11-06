@@ -142,6 +142,8 @@ w_to(vm: *Vm)
 
     val body = xt + 2 * CELL
 
+    if is_fvalue(vm, xt) then return to_fvalue(vm, body)
+
     if vm.state != 0
         compile_literal(vm, isize.wrap(body))
         compile_code(vm, &p_store)

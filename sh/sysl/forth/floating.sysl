@@ -1,0 +1,797 @@
+module sh.sysl.forth
+@no_alloc
+
+import sysl.{Display, Fallible, FormatSpec, Writer}
+import sysl.fmt.{float_scratch_len, write_real}
+import sysl.math.Float
+import sysl.raw.ptr_cast
+import sysl.text.parse_real
+
+// The Floating-Point word set and its extensions.
+//
+// **Floats have a stack of their own**, `FS_CELLS` deep, of `real`s: IEEE 754 binary64 on every
+// target, so a float is eight bytes whether a cell is two, four or eight. A word that takes a float
+// it does not have is `-45`, and one that pushes past the room is `-44`; the outer interpreter empties
+// this stack after a fault as it empties the data stack, and `CATCH` puts its depth back as it puts
+// the data stack's back.
+//
+// **The arithmetic is IEEE's and the functions are `sysl.math`'s.** `1E 0E F/` is an infinity, not
+// a fault, and `0E 0E F/` is a NaN, as the suite's IEEE tests expect.
+//
+// **The digits are `sysl.fmt`'s.** `REPRESENT` asks `write_real` for the value under `%.*e`, whose
+// digits are the exact value's rounded half to even at the place asked for, and keeps the digits and
+// the exponent; `F.`, `FE.` and `FS.` lay out the same digits. Reading text back is
+// `sysl.text.parse_real`, correctly rounded, after the Forth syntax (a `D` for the exponent, an
+// exponent that is only a sign, an exponent with no digits) is put in the form it reads.
+
+// ---------------------------------------------------------------------------------------------------
+// The stack.
+
+// Room on the floating-point stack, in floats.
+const FS_CELLS: usize = 64
+
+// The bytes in a float, which is the alignment `FALIGNED` gives, and the cells one takes inline.
+const FLOAT_BYTES: usize = sizeof(real)
+const FLOAT_CELLS: usize = FLOAT_BYTES / CELL
+
+@assert(FLOAT_CELLS * CELL == FLOAT_BYTES, "a float is a whole number of cells")
+
+// What `PRECISION` starts at.
+const DEFAULT_PRECISION: usize = 6
+
+fpush(vm: *Vm, r: real)
+    if vm.fdepth >= FS_CELLS then return fail(vm, E_FSOVERFLOW)
+
+    vm.fs[vm.fdepth] = r
+    vm.fdepth += 1
+
+// Asked before the pops it guards, as `need` is.
+fneed(vm: *Vm, n: usize) -> bool
+    if vm.fdepth >= n then return true
+
+    fail(vm, E_FSUNDERFLOW)
+    false
+
+// Pop with no check: the caller asked `fneed` first.
+fpop(vm: *Vm) -> real
+    vm.fdepth -= 1
+    vm.fs[vm.fdepth]
+
+// The `k`th float from the top, 0 the top itself.
+@inline
+fpick(vm: *Vm, k: usize) -> real = vm.fs[vm.fdepth - 1 - k]
+
+// ---------------------------------------------------------------------------------------------------
+// Floats in memory.
+
+@inline
+falign_up(a: usize) -> usize = (a + FLOAT_BYTES - 1) & ~(FLOAT_BYTES - 1)
+
+@inline
+float_at(a: usize) -> *real = ptr_cast(a)
+
+@inline
+single_at(a: usize) -> *f32 = ptr_cast(a)
+
+// A float kept in a thread or a body as cells, low bits first, so that it needs no more than cell
+// alignment: `FLITERAL`'s operand, and the body of an `FCONSTANT` or an `FVALUE`.
+real_in_cells(a: usize) -> real
+    var bits: u64 = 0
+
+    for i in 0..<FLOAT_CELLS
+        bits |= u64(usize.wrap(cell_at(a + i * CELL)[0])) << (i * BITS)
+
+    real.from_bits(bits)
+
+store_real_in_cells(a: usize, r: real)
+    val bits = r.bits()
+
+    for i in 0..<FLOAT_CELLS
+        cell_at(a + i * CELL)[0] = isize.wrap(usize.wrap(bits >> (i * BITS)))
+
+comma_real(vm: *Vm, r: real)
+    if !reserve(vm, FLOAT_BYTES) then return
+
+    store_real_in_cells(vm.here, r)
+    vm.here += FLOAT_BYTES
+
+// ---------------------------------------------------------------------------------------------------
+// The primitive `FLITERAL` compiles, and the threads behind the defining words.
+
+fs_overflow(vm: *Vm, ip: *usize, sp: *isize, tos: isize) = fault(vm, sp, tos, E_FSOVERFLOW)
+
+// A float literal: the cells after this one.
+p_flit(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
+    if vm.fdepth >= FS_CELLS then become fs_overflow(vm, ip, sp, tos)
+
+    vm.fs[vm.fdepth] = real_in_cells(usize(ip))
+    vm.fdepth += 1
+
+    become next(vm, &ip[FLOAT_CELLS], sp, tos)
+
+// The run-time halves of the defining words, each given the body's address.
+w_float_body(vm: *Vm)
+    if need(vm, 1) then fpush(vm, real_in_cells(usize.wrap(pop(vm))))
+
+w_fvalue_store(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val body = usize.wrap(pop(vm))
+
+    if fneed(vm, 1) then store_real_in_cells(body, fpop(vm))
+
+w_float_aligned_body(vm: *Vm)
+    if need(vm, 1) then push(vm, isize.wrap(falign_up(usize.wrap(pop(vm)))))
+
+// Lay down the threads an `FCONSTANT`, an `FVALUE`, an `FVARIABLE` that needs aligning, and a field
+// run, and the token `TO` compiles for an `FVALUE`. `FCONSTANT` and `FVALUE` run the same word
+// through threads of their own, so that `TO` can tell an `FVALUE` by its thread.
+boot_floating(vm: *Vm)
+    val body = headless(vm, &w_float_body)
+    val aligned_body = headless(vm, &w_float_aligned_body)
+
+    vm.fvalue_store = headless(vm, &w_fvalue_store)
+    vm.fconstant_does = vm.here
+    compile_xt(vm, body)
+    compile_code(vm, &p_exit)
+    vm.fvalue_does = vm.here
+    compile_xt(vm, body)
+    compile_code(vm, &p_exit)
+    vm.fvariable_does = vm.here
+    compile_xt(vm, aligned_body)
+    compile_code(vm, &p_exit)
+    vm.field_does = vm.here
+    compile_code(vm, &p_fetch)
+    compile_code(vm, &p_plus)
+    compile_code(vm, &p_exit)
+    vm.fdepth = 0
+    vm.precision = DEFAULT_PRECISION
+
+// Whether the word whose token is `xt` was made by `FVALUE`.
+is_fvalue(vm: *Vm, xt: usize) -> bool =
+    cell_at(xt)[0] == isize.wrap(usize(&dodoes)) && usize.wrap(cell_at(xt + CELL)[0]) == vm.fvalue_does
+
+// ---------------------------------------------------------------------------------------------------
+// The stack words.
+
+w_fdepth(vm: *Vm) = push(vm, isize(vm.fdepth))
+
+w_fdrop(vm: *Vm)
+    if fneed(vm, 1) then fpop(vm)
+
+w_fdup(vm: *Vm)
+    if fneed(vm, 1) then fpush(vm, fpick(vm, 0))
+
+w_fover(vm: *Vm)
+    if fneed(vm, 2) then fpush(vm, fpick(vm, 1))
+
+w_fswap(vm: *Vm)
+    if !fneed(vm, 2) then return
+
+    val r2 = fpop(vm)
+    val r1 = fpop(vm)
+
+    fpush(vm, r2)
+    fpush(vm, r1)
+
+w_frot(vm: *Vm)
+    if !fneed(vm, 3) then return
+
+    val r3 = fpop(vm)
+    val r2 = fpop(vm)
+    val r1 = fpop(vm)
+
+    fpush(vm, r2)
+    fpush(vm, r3)
+    fpush(vm, r1)
+
+// ---------------------------------------------------------------------------------------------------
+// Arithmetic. A word of one float replaces the top; a word of two replaces both with one.
+
+unary(vm: *Vm, f: &Fn(real) -> real)
+    if fneed(vm, 1) then vm.fs[vm.fdepth - 1] = f(fpick(vm, 0))
+
+binary(vm: *Vm, f: &Fn(real, real) -> real)
+    if !fneed(vm, 2) then return
+
+    val r2 = fpop(vm)
+
+    vm.fs[vm.fdepth - 1] = f(fpick(vm, 0), r2)
+
+w_fplus(vm: *Vm) = binary(vm, (a, b) -> a + b)
+w_fminus(vm: *Vm) = binary(vm, (a, b) -> a - b)
+w_fstar(vm: *Vm) = binary(vm, (a, b) -> a * b)
+w_fslash(vm: *Vm) = binary(vm, (a, b) -> a / b)
+w_fstarstar(vm: *Vm) = binary(vm, (a, b) -> a.pow(b))
+w_fmax(vm: *Vm) = binary(vm, (a, b) -> if a < b then b else a)
+w_fmin(vm: *Vm) = binary(vm, (a, b) -> if b < a then b else a)
+w_fatan2(vm: *Vm) = binary(vm, (y, x) -> y.atan2(x))
+
+w_fnegate(vm: *Vm) = unary(vm, a -> -a)
+w_fabs(vm: *Vm) = unary(vm, a -> a.abs())
+w_floor(vm: *Vm) = unary(vm, a -> a.floor())
+// `FROUND` rounds by the rounding mode, which is to nearest, ties to even, unless a program changes it.
+w_fround(vm: *Vm) = unary(vm, a -> a.nearbyint())
+w_ftrunc(vm: *Vm) = unary(vm, a -> a.trunc())
+w_fsqrt(vm: *Vm) = unary(vm, a -> a.sqrt())
+w_fexp(vm: *Vm) = unary(vm, a -> a.exp())
+w_fexpm1(vm: *Vm) = unary(vm, a -> a.expm1())
+w_falog(vm: *Vm) = unary(vm, a -> 10.0.pow(a))
+w_fln(vm: *Vm) = unary(vm, a -> a.ln())
+w_flnp1(vm: *Vm) = unary(vm, a -> a.ln1p())
+w_flog(vm: *Vm) = unary(vm, a -> a.log10())
+w_fsin(vm: *Vm) = unary(vm, a -> a.sin())
+w_fcos(vm: *Vm) = unary(vm, a -> a.cos())
+w_ftan(vm: *Vm) = unary(vm, a -> a.tan())
+w_fasin(vm: *Vm) = unary(vm, a -> a.asin())
+w_facos(vm: *Vm) = unary(vm, a -> a.acos())
+w_fatan(vm: *Vm) = unary(vm, a -> a.atan())
+w_fsinh(vm: *Vm) = unary(vm, a -> a.sinh())
+w_fcosh(vm: *Vm) = unary(vm, a -> a.cosh())
+w_ftanh(vm: *Vm) = unary(vm, a -> a.tanh())
+w_fasinh(vm: *Vm) = unary(vm, a -> a.asinh())
+w_facosh(vm: *Vm) = unary(vm, a -> a.acosh())
+w_fatanh(vm: *Vm) = unary(vm, a -> a.atanh())
+
+// `FSINCOS` ( F: r1 -- r2 r3 ): the sine, then the cosine.
+w_fsincos(vm: *Vm)
+    if !fneed(vm, 1) then return
+
+    val r = fpop(vm)
+
+    fpush(vm, r.sin())
+    fpush(vm, r.cos())
+
+// The comparisons answer on the data stack.
+w_fzero_less(vm: *Vm)
+    if fneed(vm, 1) then push(vm, flag(fpop(vm) < 0.0))
+
+w_fzero_equal(vm: *Vm)
+    if fneed(vm, 1) then push(vm, flag(fpop(vm) == 0.0))
+
+w_fless(vm: *Vm)
+    if !fneed(vm, 2) then return
+
+    val r2 = fpop(vm)
+
+    push(vm, flag(fpop(vm) < r2))
+
+// `F~` ( F: r1 r2 r3 -- ) ( -- flag ): with `r3` positive, whether `r1` and `r2` are less than `r3`
+// apart; with `r3` zero of either sign, whether they are the same bits, so `0E -0E 0E F~` is false
+// and a NaN matches itself; with `r3` negative, whether they are apart by less than `|r3|` times the
+// sum of their magnitudes.
+w_fproximate(vm: *Vm)
+    if !fneed(vm, 3) then return
+
+    val r3 = fpop(vm)
+    val r2 = fpop(vm)
+    val r1 = fpop(vm)
+    val near =
+        if r3 > 0.0 then (r1 - r2).abs() < r3
+        elif r3 == 0.0 then r1.bits() == r2.bits()
+        else (r1 - r2).abs() < r3.abs() * (r1.abs() + r2.abs())
+
+    push(vm, flag(near))
+
+// ---------------------------------------------------------------------------------------------------
+// Between the stacks. A double cell is the integer twice a cell's width; a float past an integer's
+// range becomes the nearest end of it, and a NaN becomes 0.
+
+w_d_to_f(vm: *Vm)
+    if need(vm, 2) then fpush(vm, real(pop_d(vm)))
+
+w_f_to_d(vm: *Vm)
+    if fneed(vm, 1) then push_d(vm, DCell(fpop(vm)))
+
+w_s_to_f(vm: *Vm)
+    if need(vm, 1) then fpush(vm, real(pop(vm)))
+
+w_f_to_s(vm: *Vm)
+    if fneed(vm, 1) then push(vm, isize(fpop(vm)))
+
+// ---------------------------------------------------------------------------------------------------
+// Memory. `F@` and `F!` are `DF@` and `DF!`, since a float is a double-precision one; `SF@` and `SF!`
+// round to and widen from IEEE single precision, four bytes.
+
+w_ffetch(vm: *Vm)
+    if need(vm, 1) then fpush(vm, float_at(usize.wrap(pop(vm)))[0])
+
+w_fstore(vm: *Vm)
+    if !need(vm, 1) then return
+    if !fneed(vm, 1) then return
+
+    float_at(usize.wrap(pop(vm)))[0] = fpop(vm)
+
+w_sffetch(vm: *Vm)
+    if need(vm, 1) then fpush(vm, real(single_at(usize.wrap(pop(vm)))[0]))
+
+w_sfstore(vm: *Vm)
+    if !need(vm, 1) then return
+    if !fneed(vm, 1) then return
+
+    single_at(usize.wrap(pop(vm)))[0] = f32(fpop(vm))
+
+// Aligning and sizing, by the bytes in the kind of float named.
+align_word(vm: *Vm, bytes: usize)
+    val to = (vm.here + bytes - 1) & ~(bytes - 1)
+
+    if reserve(vm, to - vm.here) then vm.here = to
+
+aligned_word(vm: *Vm, bytes: usize)
+    if need(vm, 1) then push(vm, isize.wrap((usize.wrap(pop(vm)) + bytes - 1) & ~(bytes - 1)))
+
+plus_word(vm: *Vm, bytes: usize)
+    if need(vm, 1) then push(vm, pop(vm) +% isize(bytes))
+
+times_word(vm: *Vm, bytes: usize)
+    if need(vm, 1) then push(vm, pop(vm) *% isize(bytes))
+
+w_falign(vm: *Vm) = align_word(vm, FLOAT_BYTES)
+w_faligned(vm: *Vm) = aligned_word(vm, FLOAT_BYTES)
+w_float_plus(vm: *Vm) = plus_word(vm, FLOAT_BYTES)
+w_floats(vm: *Vm) = times_word(vm, FLOAT_BYTES)
+w_sfalign(vm: *Vm) = align_word(vm, 4)
+w_sfaligned(vm: *Vm) = aligned_word(vm, 4)
+w_sfloat_plus(vm: *Vm) = plus_word(vm, 4)
+w_sfloats(vm: *Vm) = times_word(vm, 4)
+
+// ---------------------------------------------------------------------------------------------------
+// Defining words.
+
+// `FCONSTANT` ( "name" -- ) ( F: r -- ) and `FVALUE`: the float is kept in the body as cells, so the
+// body needs no more than the cell alignment every body has.
+float_word(vm: *Vm, thread: usize)
+    if !fneed(vm, 1) then return
+
+    val r = fpop(vm)
+
+    if !header(vm, parse_name(vm), &dovar) then return
+
+    comma_real(vm, r)
+    does_thread(vm, thread)
+
+w_fconstant(vm: *Vm) = float_word(vm, vm.fconstant_does)
+w_fvalue(vm: *Vm) = float_word(vm, vm.fvalue_does)
+
+// `FVARIABLE` ( "name" -- ): room for a float at an aligned address. Where the body, two cells past
+// the token, is not aligned for a float, the word answers the next address that is.
+w_fvariable(vm: *Vm)
+    if !header(vm, parse_name(vm), &dovar) then return
+
+    val body = vm.here
+    val at = falign_up(body)
+
+    if at != body then does_thread(vm, vm.fvariable_does)
+
+    if !reserve(vm, at - body + FLOAT_BYTES) then return
+
+    vm.here = at + FLOAT_BYTES
+    float_at(at)[0] = 0.0
+
+// `FFIELD:` ( n1 "name" -- n2 ) and its kin: a word that adds the field's offset, `n1` aligned for
+// the kind of float, to an address.
+field_word(vm: *Vm, bytes: usize)
+    if !need(vm, 1) then return
+
+    val offset = (pop(vm) +% isize(bytes - 1)) & ~isize(bytes - 1)
+
+    if !header(vm, parse_name(vm), &dovar) then return
+
+    comma(vm, offset)
+    does_thread(vm, vm.field_does)
+    push(vm, offset +% isize(bytes))
+
+w_ffield(vm: *Vm) = field_word(vm, FLOAT_BYTES)
+w_sffield(vm: *Vm) = field_word(vm, 4)
+
+// `FLITERAL` ( F: r -- ): compile the float, which the definition pushes when it runs.
+w_fliteral(vm: *Vm)
+    if vm.def_start == 0 then return fail(vm, E_COMPILEONLY)
+
+    if fneed(vm, 1) then compile_float(vm, fpop(vm))
+
+compile_float(vm: *Vm, r: real)
+    compile_code(vm, &p_flit)
+    comma_real(vm, r)
+
+// ---------------------------------------------------------------------------------------------------
+// Reading floats.
+
+// The bytes from `from` while they are decimal digits: where they stop.
+digits_end(s: []const u8, from: usize) -> usize
+    var i = from
+
+    while i < s.len && s[i] >= u8('0') && s[i] <= u8('9')
+        i += 1
+
+    i
+
+// Room for the text `parse_real` is handed when the Forth spelling has to be rewritten.
+const FLOAT_TEXT: usize = LINE_BYTES + 8
+
+// `s` read under Forth 2012's syntax for `>FLOAT` (`strict` false) or for a float in the source
+// (`strict` true):
+//
+//     >FLOAT:  [sign] (digits [. digits0] | . digits) [(E|e|D|d) [sign] digits0 | sign digits0]
+//     source:  [sign] digits [. digits0] (E|e) [sign] digits0
+//
+// The significand is already the form `parse_real` reads. The exponent is rewritten to it, a `D` as an
+// `e` and a missing exponent or exponent digits as 0, which is a copy, and only then; a spelling longer
+// than the copy's room that needs one is refused.
+read_float(s: []const u8, strict: bool) -> Option[real]
+    var i: usize = 0
+
+    if i < s.len && (s[i] == u8('+') || s[i] == u8('-')) then i += 1
+
+    val whole = digits_end(s, i)
+    var frac = whole
+
+    if whole < s.len && s[whole] == u8('.') then frac = digits_end(s, whole + 1)
+
+    val digits = (whole - i) + (if frac > whole then frac - whole - 1 else 0)
+
+    if digits == 0 || (strict && whole == i) then return None
+
+    val significand = frac
+    var e = significand
+
+    if e < s.len
+        val c = upper(s[e])
+
+        if c == u8('E') || (!strict && c == u8('D'))
+            e += 1
+        else if strict || (c != u8('+') && c != u8('-'))
+            return None
+    else if strict
+        return None
+
+    // The exponent, from `e`: an optional sign, then digits to the end.
+    var sign_at = e
+
+    if e < s.len && (s[e] == u8('+') || s[e] == u8('-')) then e += 1
+
+    if digits_end(s, e) != s.len then return None
+
+    val marked = significand < s.len && (s[significand] == u8('e') || s[significand] == u8('E'))
+
+    if significand == s.len || (marked && e < s.len)
+        return parse_real(s).ok()
+
+    // Rewrite: the significand, `e`, the exponent's sign if any, and its digits or a 0.
+    var text: [FLOAT_TEXT]u8 = [0; FLOAT_TEXT]
+    var n: usize = 0
+
+    if s.len + 2 > FLOAT_TEXT then return None
+
+    for k in 0..<significand
+        text[n] = s[k]
+        n += 1
+
+    text[n] = u8('e')
+    n += 1
+
+    if marked || upper(s[significand]) == u8('D') then sign_at = significand + 1
+
+    for k in sign_at..<s.len
+        text[n] = s[k]
+        n += 1
+
+    if e == s.len
+        text[n] = u8('0')
+        n += 1
+
+    parse_real(text[0..<n]).ok()
+end read_float
+
+// `>FLOAT` ( c-addr u -- true | false ) ( F: -- r | ): a string of blanks is zero.
+w_to_float(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val n = pop(vm)
+    val at = usize.wrap(pop(vm))
+    val s = byte_at(at)[0..<usize(if n < 0 then 0 else n)]
+    var blank = true
+
+    for b in s
+        if b != 32 then blank = false
+
+    if blank
+        fpush(vm, 0.0)
+        return push(vm, -1)
+
+    read_float(s, false) match
+        Some(r) ->
+            fpush(vm, r)
+            push(vm, -1)
+        None -> push(vm, 0)
+
+// ---------------------------------------------------------------------------------------------------
+// Writing floats.
+
+// What `write_real` writes under `%.*e`, `d.ddde±x`, taken apart as it arrives: each digit is handed
+// to `keep` with its index, and the exponent is read.
+struct Digits
+    // Where the digits go: memory from `at` for `REPRESENT`, or the console for the display words.
+    at: usize
+    con: *Console
+    to_console: bool
+    layout: Layout
+    p: usize
+    n: isize
+
+    // The parse: how many digits so far, whether the exponent has started, its sign and value.
+    count: usize
+    in_exponent: bool
+    negative_exponent: bool
+    exponent: isize
+
+    // Zeros held back after the point under `F.`, written only if a digit other than zero follows.
+    zeros: usize
+end Digits
+
+// How the display words lay the digits out.
+enum Layout
+    // `REPRESENT` and the first pass of every display word: the digits, nothing else.
+    Bare
+    // `F.`: [-]ddd.ddd, the trailing zeros after the point left off.
+    Fixed
+    // `FS.`: [-]d.dddEn.
+    Scientific
+    // `FE.`: [-]d.dddEn with one to three digits before the point and `n` a multiple of three.
+    Engineering
+
+impl Writer for Digits
+    write(*self, bytes: []const u8)
+        for b in bytes
+            if self.in_exponent
+                if b == u8('-')
+                    self.negative_exponent = true
+                else if b >= u8('0') && b <= u8('9')
+                    self.exponent = self.exponent * 10 + isize(b - u8('0'))
+            else if b == u8('e')
+                self.in_exponent = true
+            else if b >= u8('0') && b <= u8('9')
+                self.digit(b)
+    end write
+
+impl Fallible for Digits
+
+impl Digits
+    emit(*self, b: u8)
+        if self.to_console then self.con.emit(b)
+
+    emit_zeros(*self, k: isize)
+        for _ in 0..<(if k > 0 then k else 0)
+            self.emit(u8('0'))
+
+    // Where `FE.` puts the point: after one to three digits.
+    before_point(self) -> isize
+        val e = self.n - 1
+        val m = ((e % 3) + 3) % 3
+
+        m + 1
+
+    digit(*self, b: u8)
+        val k = self.count
+
+        self.count += 1
+
+        if k >= self.p then return
+
+        self.layout match
+            Bare -> if self.at != 0 then byte_at(self.at + k)[0] = b
+            Fixed ->
+                if k == 0 && self.n <= 0
+                    self.con.send("0.".bytes)
+                    self.emit_zeros(0 - self.n)
+                else if self.n > 0 && isize(k) == self.n
+                    self.emit(u8('.'))
+
+                if isize(k) >= self.n && b == u8('0')
+                    self.zeros += 1
+                else
+                    self.emit_zeros(isize(self.zeros))
+                    self.zeros = 0
+                    self.emit(b)
+            Scientific ->
+                if k == 1 then self.emit(u8('.'))
+
+                self.emit(b)
+            Engineering ->
+                if isize(k) == self.before_point() then self.emit(u8('.'))
+
+                self.emit(b)
+    end digit
+
+    // What follows the last digit.
+    finish(*self)
+        val p = isize(self.p)
+
+        self.layout match
+            Bare -> ()
+            Fixed ->
+                if self.n >= p
+                    self.emit_zeros(self.n - p)
+                    self.emit(u8('.'))
+            Scientific ->
+                if p == 1 then self.emit(u8('.'))
+
+                self.send_exponent(self.n - 1)
+            Engineering ->
+                val before = self.before_point()
+
+                if p <= before
+                    self.emit_zeros(before - p)
+                    self.emit(u8('.'))
+
+                self.send_exponent(self.n - before)
+    end finish
+
+    send_exponent(*self, e: isize)
+        self.emit(u8('E'))
+
+        if e < 0 then self.emit(u8('-'))
+
+        var digits: [8]u8 = [0; 8]
+        var k: usize = 0
+        var rest = if e < 0 then 0 - e else e
+
+        loop
+            digits[k] = u8('0') + u8(rest % 10)
+            k += 1
+            rest /= 10
+
+            if rest == 0 then break
+
+        while k > 0
+            k -= 1
+            self.emit(digits[k])
+    end send_exponent
+end Digits
+
+// The first `p` significant digits of `|r|`, rounded half to even, through `d`, and the decimal
+// exponent that puts the point before the first of them, which zero has as 1. `p` of 0 writes no
+// digit but still answers the exponent of the value rounded to one.
+run_digits(d: *Digits, r: real) -> isize
+    var scratch: [float_scratch_len]u8 = [0; float_scratch_len]
+    val asked = if d.p == 0 then 0 else d.p - 1
+
+    d.count = 0
+    d.in_exponent = false
+    d.negative_exponent = false
+    d.exponent = 0
+    d.zeros = 0
+    // The specifier is a float conversion and the scratch is the length that is always enough, so
+    // neither of the two refusals can happen.
+    _ = write_real(r.abs(), d, "%.*e", 0, int(asked), scratch[..])
+
+    val e = if d.negative_exponent then 0 - d.exponent else d.exponent
+
+    e + 1
+
+digits_of(vm: *Vm, at: usize, p: usize, layout: Layout) -> Digits =
+    Digits(at, vm.con, false, layout, p, 0, 0, false, false, 0, 0)
+
+is_negative(r: real) -> bool = r.bits() >> 63 != 0
+
+// `REPRESENT` ( c-addr u -- n flag1 flag2 ) ( F: r -- ): the `u` most significant digits of `r` at
+// `c-addr`, the exponent `n` that puts the point before them, whether `r` is negative (its sign bit,
+// so `-0E` is), and whether it was a number. An infinity or a NaN answers false, with `INF` or `NAN`
+// written in as much of the buffer as it fits, and an exponent of 0.
+w_represent(vm: *Vm)
+    if !need(vm, 2) then return
+    if !fneed(vm, 1) then return
+
+    val u = pop(vm)
+    val at = usize.wrap(pop(vm))
+    val r = fpop(vm)
+    val p = usize(if u < 0 then 0 else u)
+
+    if r.is_nan() || r.is_infinite()
+        val word = if r.is_nan() then "NAN" else "INF"
+
+        for k in 0..<(if p < 3 then p else 3)
+            byte_at(at + k)[0] = word.bytes[k]
+
+        push(vm, 0)
+        push(vm, flag(is_negative(r)))
+        return push(vm, 0)
+
+    var d = digits_of(vm, at, p, Layout.Bare)
+
+    push(vm, run_digits(&d, r))
+    push(vm, flag(is_negative(r)))
+    push(vm, -1)
+
+// A display word: the sign, the digits laid out, and a space. An infinity is `inf` or `-inf` and a
+// NaN is `nan`.
+display(vm: *Vm, layout: Layout)
+    if !fneed(vm, 1) then return
+
+    val r = fpop(vm)
+    val p = if vm.precision == 0 then 1 else vm.precision
+
+    if is_negative(r) && !r.is_nan() then vm.con.emit(u8('-'))
+
+    if r.is_nan() || r.is_infinite()
+        vm.con.send(if r.is_nan() then "nan ".bytes else "inf ".bytes)
+        return
+
+    // The first pass finds the exponent the rounded digits have; the second writes them.
+    var d = digits_of(vm, 0, p, Layout.Bare)
+
+    d.n = run_digits(&d, r)
+    d.to_console = true
+    d.layout = layout
+    run_digits(&d, r)
+    d.finish()
+    vm.con.emit(32)
+
+w_fdot(vm: *Vm) = display(vm, Layout.Fixed)
+w_fsdot(vm: *Vm) = display(vm, Layout.Scientific)
+w_fedot(vm: *Vm) = display(vm, Layout.Engineering)
+
+w_precision(vm: *Vm) = push(vm, isize(vm.precision))
+
+w_set_precision(vm: *Vm)
+    if need(vm, 1)
+        val u = pop(vm)
+
+        vm.precision = usize(if u < 0 then 0 else u)
+
+// ---------------------------------------------------------------------------------------------------
+// The text interpreter's floats, and `TO` of an `FVALUE`.
+
+// A float in the source, when `BASE` is decimal: pushed now or compiled.
+float_literal(vm: *Vm, name: []const u8) -> bool
+    if vm.base != 10 then return false
+
+    read_float(name, true) match
+        Some(r) ->
+            if vm.state == 0 then fpush(vm, r) else compile_float(vm, r)
+
+            true
+        None -> false
+
+// `TO` of an `FVALUE` whose body is at `body`, now or when the definition runs.
+to_fvalue(vm: *Vm, body: usize)
+    if vm.state != 0
+        compile_literal(vm, isize.wrap(body))
+        compile_xt(vm, vm.fvalue_store)
+        return
+
+    if fneed(vm, 1) then store_real_in_cells(body, fpop(vm))
+
+// What `ENVIRONMENT?` knows of floats: `FLOATING` and `FLOATING-EXT` are present, `FLOATING-STACK` is
+// the stack's depth and `MAX-FLOAT` the largest finite float. Answers whether it knew the name.
+float_environment(vm: *Vm, name: []const u8) -> bool
+    if same_name(name, "FLOATING".bytes) || same_name(name, "FLOATING-EXT".bytes)
+        push(vm, -1)
+    else if same_name(name, "FLOATING-STACK".bytes)
+        push(vm, isize(FS_CELLS))
+    else if same_name(name, "MAX-FLOAT".bytes)
+        fpush(vm, real.max_value())
+    else
+        return false
+
+    push(vm, -1)
+    true
+end float_environment
+
+// The console as a `Writer`.
+struct ConsoleOut
+    con: *Console
+
+impl Writer for ConsoleOut
+    write(*self, bytes: []const u8) = self.con.send(bytes)
+
+impl Fallible for ConsoleOut
+
+// A float as `SEE` shows a literal: the fewest digits that read back as the same float, as `print`
+// writes them, with `E0` after, so that the text is a float in the source again: `0.1E0`, `-0E0`.
+send_float_literal(vm: *Vm, r: real)
+    var out = ConsoleOut(vm.con)
+
+    r.display(&out, FormatSpec(0, -1, false))
+
+    if !r.is_nan() && !r.is_infinite() then vm.con.send("E0".bytes)

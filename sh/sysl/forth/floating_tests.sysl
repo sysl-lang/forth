@@ -1,0 +1,209 @@
+module sh.sysl.forth
+@no_alloc
+@tests
+
+// The Floating-Point word set and its extensions: the Forth 2012 suite's floating-point files, then
+// what they do not reach. The machine, its region and its console are `tests.sysl`'s.
+
+// ---------------------------------------------------------------------------------------------------
+// The suite's floating-point files.
+
+// A machine that has run the suite's floating-point tester, then the counting `T{` and error count
+// and the two words the files use that are not this system's.
+before_fp()
+    start(embed("../../../tests/fp/ttester.fs"))
+    quit(&vm)
+    also(embed("../../../tests/fp/count.fs"))
+
+// The tests counted and the errors ttester reported.
+fp_tally() -> (isize, isize)
+    evaluate(&vm, "#TESTS @ #ERRORS @".bytes)
+    assert(vm.error == 0, "the counters are there")
+
+    val failed = pop(&vm)
+
+    (pop(&vm), failed)
+
+// Run one file and check it: every test ran, none failed, no line faulted, and nothing was left on
+// either stack.
+fp_file(text: []const u8, expected: isize)
+    before_fp()
+    also(text)
+
+    val (tests, failed) = fp_tally()
+
+    assert(tests == expected, "every test in the file ran")
+    assert(failed == 0, "none failed")
+    assert(vm.faults == 0, "no line faulted")
+    assert(vm.fdepth == 0, "the floating-point stack is empty at the end")
+
+@test("the suite's fatan2-test.fs: FATAN2 at normal values, signed zeros, infinities and NaNs")
+fp_fatan2()
+    fp_file(embed("../../../tests/fp/fatan2-test.fs"), 39)
+
+@test("the suite's ieee-arith-test.fs: F+ F- F* F/ FSQRT on IEEE's special values")
+fp_ieee_arith()
+    fp_file(embed("../../../tests/fp/ieee-arith-test.fs"), 172)
+
+@test("the suite's ieee-fprox-test.fs: F~ exact, absolute and relative")
+fp_ieee_fprox()
+    fp_file(embed("../../../tests/fp/ieee-fprox-test.fs"), 242)
+
+@test("the suite's fpzero-test.4th: signed zero")
+fp_zero()
+    fp_file(embed("../../../tests/fp/fpzero-test.4th"), 12)
+
+@test("the suite's fpio-test.4th: literals read correctly rounded, single and double")
+fp_io()
+    fp_file(embed("../../../tests/fp/fpio-test.4th"), 110)
+
+@test("the suite's to-float-test.4th: >FLOAT's syntax")
+fp_to_float()
+    fp_file(embed("../../../tests/fp/to-float-test.4th"), 35)
+
+@test("the suite's ak-fp-test.fth: the word set across the board")
+fp_ak()
+    fp_file(embed("../../../tests/fp/ak-fp-test.fth"), 214)
+
+@test("the suite's paranoia.4th finds no failure, defect or flaw")
+fp_paranoia()
+    before_fp()
+    also(embed("../../../tests/fp/paranoia.4th"))
+    evaluate(&vm, "ErrCnt{ 0 } @ ErrCnt{ 1 } @ ErrCnt{ 2 } @ ErrCnt{ 3 } @ + + +".bytes)
+    assert(vm.error == 0 && pop(&vm) == 0, "every count is zero")
+    assert(vm.faults == 0, "no line faulted")
+
+    val text = written(&con)
+    val verdict = "The arithmetic diagnosed appears to be Excellent!".bytes
+    var found = false
+
+    for i in 0..<(text.len - verdict.len)
+        if text[i..<i + verdict.len] == verdict then found = true
+
+    assert(found, "and says so")
+
+// ---------------------------------------------------------------------------------------------------
+// Reading floats in the source.
+
+@test("a float in the source is recognised in decimal, with or without a fraction, sign or exponent sign")
+float_literals()
+    assert(says("1E F. 1.5E3 F. -2.5e-1 F. 1.E F. 25E-1 F. +3E+0 F. FDEPTH .", "1. 1500. -0.25 1. 2.5 3. 0 "), "forms")
+    assert(says(": T 1.5E3 -2E ; T F. F.", "-2. 1500. "), "compiled")
+
+@test("in any other base a float is not recognised: 1E is a hexadecimal number")
+float_literal_not_in_hex()
+    assert(says("HEX 1E DECIMAL . FDEPTH .", "30 0 "), "a number")
+    assert(says("HEX 1.5E3", "1.5E3 ?\n"), "not a float")
+
+@test("what is not a float in the source is an undefined word")
+float_literal_refusals()
+    assert(says(".5E", ".5E ?\n"), "no digit before the point")
+    assert(says("1.5", "1.5 ?\n"), "no exponent")
+    assert(says("1D0", "1D0 ?\n"), "D is >FLOAT's alone")
+    assert(says("1E1E", "1E1E ?\n"), "two exponents")
+
+@test("a number with a point after it is a double cell")
+float_double_literals()
+    assert(says("1. . . -1. . . $FF. . . : T 7. ; T . .", "0 1 -1 -1 0 255 0 7 "), "doubles")
+    assert(says("1. D>F F.", "1. "), "into a float")
+
+@test(">FLOAT reads D exponents and bare signed exponents, and leaves nothing for what it refuses")
+float_to_float()
+    assert(says("S\" 1+1\" >FLOAT . F. S\" 9d-\" >FLOAT . F. S\" .E\" >FLOAT . FDEPTH .", "-1 10. -1 9. 0 0 "), "forms")
+    assert(says("S\" 1E400\" >FLOAT . F.", "-1 inf "), "past the largest finite float")
+
+// ---------------------------------------------------------------------------------------------------
+// Writing floats.
+
+@test("F. of zero, negative zero, the infinities and a NaN")
+float_dot_specials()
+    assert(says("0E F. -0E F. 1E 0E F/ F. -1E 0E F/ F. 0E 0E F/ F.", "0. -0. inf -inf nan "), "specials")
+    assert(says("0E FS. -0E FE.", "0.00000E0 -0.00000E0 "), "zero in the other layouts")
+
+@test("F. of huge and tiny values keeps the significant digits and writes the rest as zeros")
+float_dot_extremes()
+    assert(says("1E-10 F. 1.5E-300 FS. 1E300 FE.", "0.0000000001 1.50000E-300 1.00000E300 "), "tiny and huge")
+    assert(says("1E25 F.", "10000000000000000000000000. "), "past the significant digits")
+    assert(says("2.2250738585072014E-308 FS. 4.9E-324 FS.", "2.22507E-308 4.94066E-324 "), "smallest normal and subnormal")
+
+@test("PRECISION is how many significant digits the display words show, rounded half to even")
+float_precision()
+    assert(says("PRECISION .", "6 "), "six to start")
+    assert(says("3 SET-PRECISION PRECISION . 2E 3E F/ F. 1E 3E F/ FS. 12345E FE.", "3 0.667 3.33E-1 12.3E3 "), "three")
+    assert(says("1 SET-PRECISION 2.5E F. 3.5E F. 950E FS. 300E FE.", "2. 4. 1.E3 300.E0 "), "one, ties to even")
+    assert(says("17 SET-PRECISION 0.1E F.", "0.10000000000000001 "), "every digit a double has")
+
+@test("REPRESENT answers the rounded digits, the exponent, the sign and whether it was a number")
+float_represent()
+    assert(says("PAD 3 2.5E REPRESENT . . . PAD 3 TYPE", "-1 0 1 250"), "2.5")
+    assert(says("PAD 1 9.5E REPRESENT . . . PAD 1 TYPE", "-1 0 2 1"), "rounding carries into the exponent")
+    assert(says("PAD 4 -0E REPRESENT . . . PAD 4 TYPE", "-1 -1 1 0000"), "negative zero")
+    assert(says("PAD 3 -1E 0E F/ REPRESENT . . . PAD 3 TYPE", "0 -1 0 INF"), "an infinity is not a number")
+
+@test("SEE shows a float literal so that it reads back")
+float_see_literal()
+    assert(says(": T [ 2.5E0 ] FLITERAL 0.1E0 F+ ; SEE T", ": T\n   0: 2.5E0\n   2: 0.1E0\n   4: F+\n   6: ;\n"), "literals")
+
+// ---------------------------------------------------------------------------------------------------
+// The stack.
+
+@test("the floating-point stack underflows with -45 and the depth is unchanged")
+float_underflow()
+    assert(says("' FDROP CATCH . FDEPTH .", "-45 0 "), "empty")
+    assert(says("1E ' F+ CATCH . FDEPTH . F.", "-45 1 1. "), "one short")
+    assert(says("FDROP\nFDEPTH .", "floating-point stack underflow\n0 "), "reported")
+
+@test("the floating-point stack overflows with -44, and CATCH puts its depth back")
+float_overflow()
+    assert(says(": P 65 0 DO 1E LOOP ; ' P CATCH . FDEPTH .", "-44 0 "), "past the room")
+    assert(says(": P 64 0 DO 1E LOOP ; P FDEPTH .", "64 "), "the room is 64")
+
+@test("the two stacks are separate, and a fault empties both")
+float_stacks_separate()
+    assert(says("1 2E 3 S>F F+ F>S . . DEPTH .", "5 1 0 "), "between them")
+    assert(says("1 2E .S FDEPTH .", "<1> 1 1 "), ".S shows the data stack")
+    assert(says("1 2E FROB\nDEPTH . FDEPTH .", "FROB ?\n0 0 "), "a fault empties both")
+    assert(says("1E 2E : T 3E 3 THROW ; ' T CATCH . FDEPTH .", "3 2 "), "THROW puts the depth back")
+
+@test("F>S, F>D and FTRUNC truncate toward zero, and FROUND rounds half to even")
+float_to_integer()
+    assert(says("-2.7E F>S . 2.7E F>S . -2.7E F>D . . -2.7E FTRUNC F. 2.5E FROUND F. -3.5E FROUND F.", "-2 2 -1 -2 -2. 2. -4. "), "conversions")
+
+@test("FATANH is the inverse of FTANH")
+float_atanh()
+    assert(says("0.5E FTANH FATANH 0.5E F- FABS 1E-15 F< .", "-1 "), "round trip")
+
+// ---------------------------------------------------------------------------------------------------
+// Floats in the dictionary.
+
+@test("FALIGN and the sizes: a float is eight bytes, a single four")
+float_alignment()
+    assert(says("1 ALLOT FALIGN HERE 8 MOD . 1 ALLOT SFALIGN HERE 4 MOD . 1 ALLOT DFALIGN HERE 8 MOD .", "0 0 0 "), "aligned")
+    assert(says("3 FALIGNED . 8 FALIGNED . 9 SFALIGNED . 9 DFALIGNED .", "8 8 12 16 "), "aligned addresses")
+    assert(says("2 FLOATS . 2 SFLOATS . 2 DFLOATS . 1 FLOAT+ . 1 SFLOAT+ . 1 DFLOAT+ .", "16 8 16 9 5 9 "), "sizes")
+    assert(says("1 ALLOT FVARIABLE V V 8 MOD . V F@ F. 2E V F! V F@ F.", "0 0. 2. "), "an FVARIABLE is aligned and starts at 0")
+
+@test("FCONSTANT, FVALUE and TO, now and compiled")
+float_value()
+    assert(says("2E FCONSTANT TWO TWO TWO F* F.", "4. "), "constant")
+    assert(says("1E FVALUE V V F. 2E TO V V F. : S 3E TO V ; S V F.", "1. 2. 3. "), "value")
+    assert(says("1E FVALUE V 5 VALUE X 6 TO X X . V F.", "6 1. "), "TO an ordinary VALUE still stores a cell")
+
+@test("the field words align their offsets for their kind of float")
+float_fields()
+    assert(says("1 FFIELD: A SFFIELD: B DFFIELD: C CONSTANT SZ 100 A . 100 B . 100 C . SZ .", "108 116 124 32 "), "offsets")
+
+@test("SF! rounds to single precision and SF@ widens it back")
+float_single()
+    assert(says("17 SET-PRECISION PAD 0.1E SF! PAD SF@ F.", "0.10000000149011612 "), "rounded")
+
+@test("ENVIRONMENT? answers the floating-point queries")
+float_environment_queries()
+    assert(says("S\" FLOATING-STACK\" ENVIRONMENT? . . S\" floating-ext\" ENVIRONMENT? . .", "-1 64 -1 -1 "), "known")
+    assert(says("S\" MAX-FLOAT\" ENVIRONMENT? . FS.", "-1 1.79769E308 "), "the largest float")
+    assert(says("S\" FROB\" ENVIRONMENT? .", "0 "), "unknown")
+
+@test("a ( comment with no ) on its line goes on into the next lines of a file")
+float_paren_across_lines()
+    assert(says("( one\ntwo ) 5 .", "5 "), "across lines")
+    assert(says("S\" ( unended\" EVALUATE 6 .", "6 "), "ends with an evaluated string")

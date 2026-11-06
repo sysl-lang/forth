@@ -370,6 +370,9 @@ see_thread(vm: *Vm, start: usize)
         else if code == &p_lit
             send_number(vm, cell_at(operand)[0])
             at = operand + CELL
+        else if code == &p_flit
+            send_float_literal(vm, real_in_cells(operand))
+            at = operand + FLOAT_BYTES
         else if branch_name(code) is Some(name)
             val target = usize.wrap(cell_at(operand)[0])
 

@@ -76,6 +76,8 @@ const E_NAMELEN: isize = -19
 const E_UNSUPPORTED: isize = -21
 const E_CONTROL: isize = -22
 const E_RANGE: isize = -24
+const E_FSOVERFLOW: isize = -44
+const E_FSUNDERFLOW: isize = -45
 const E_QUIT: isize = -56
 const E_IFELSE: isize = -58
 const E_SUBSTITUTE: isize = -78
@@ -162,6 +164,18 @@ struct Vm
     marker_does: usize
     defer_unset: usize
 
+    // The threads an `FCONSTANT`, an `FVALUE`, an unaligned `FVARIABLE` and a float field run, and the
+    // token `TO` compiles to store into an `FVALUE`.
+    fconstant_does: usize
+    fvalue_does: usize
+    fvariable_does: usize
+    field_does: usize
+    fvalue_store: usize
+
+    // The floating-point stack's depth, and the significant digits `F.`, `FE.` and `FS.` show.
+    fdepth: usize
+    precision: usize
+
     con: *Console
 
     // A three-cell thread that `EXECUTE` runs a word through.
@@ -179,6 +193,7 @@ struct Vm
 
     ds: [DS_CELLS]isize
     rs: [RS_CELLS]isize
+    fs: [FS_CELLS]real
 end Vm
 
 // A Forth flag: all bits set for true.
@@ -286,3 +301,4 @@ reset_stacks(vm: *Vm)
     vm.sp = vm.s0
     vm.tos = 0
     vm.rp = vm.r0
+    vm.fdepth = 0

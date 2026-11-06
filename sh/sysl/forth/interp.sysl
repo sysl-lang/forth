@@ -225,6 +225,21 @@ convert(ud: UDCell, s: []const u8, base: isize) -> (UDCell, usize)
 number(vm: *Vm, s: []const u8) -> Option[isize]
     if s.len == 3 && s[0] == u8('\'') && s[2] == u8('\'') then return Some(isize(s[1]))
 
+    integer(vm, s) match
+        Some(n) -> Some(isize.wrap(n))
+        None -> None
+
+// A whole token as a double-cell number: a single-cell number's spelling with a `.` after it, as the
+// Double-Number word set reads `1.` and `-$FF.`.
+double_number(vm: *Vm, s: []const u8) -> Option[DCell]
+    if s.len < 2 || s[s.len - 1] != u8('.') then return None
+
+    integer(vm, s[0..<s.len - 1]) match
+        Some(n) -> Some(DCell.wrap(n))
+        None -> None
+
+// The digits of a number's spelling, with its prefix and sign, accumulated in a double cell's width.
+integer(vm: *Vm, s: []const u8) -> Option[UDCell]
     var base = vm.base
     var i: usize = 0
 
@@ -251,9 +266,7 @@ number(vm: *Vm, s: []const u8) -> Option[isize]
 
     if i + used != s.len then return None
 
-    val x = isize.wrap(n)
-
-    Some(if negative then 0 -% x else x)
+    Some(if negative then 0 -% n else n)
 
 // ---------------------------------------------------------------------------------------------------
 // The text interpreter.
@@ -291,22 +304,25 @@ interpret(vm: *Vm)
                 execute(vm, xt)
             else
                 compile_xt(vm, xt)
-        else
-            number(vm, name) match
-                Some(x) ->
-                    if vm.state == 0
-                        push(vm, x)
-                    else
-                        compile_code(vm, &p_lit)
-                        comma(vm, x)
-                None ->
-                    val n = if name.len > vm.missing.len then vm.missing.len else name.len
+        else if number(vm, name) is Some(x)
+            if vm.state == 0
+                push(vm, x)
+            else
+                compile_literal(vm, x)
+        else if double_number(vm, name) is Some(d)
+            if vm.state == 0
+                push_d(vm, d)
+            else
+                compile_literal(vm, isize.wrap(d))
+                compile_literal(vm, isize.wrap(d >> BITS))
+        else if !float_literal(vm, name)
+            val n = if name.len > vm.missing.len then vm.missing.len else name.len
 
-                    for i in 0..<n
-                        vm.missing[i] = name[i]
+            for i in 0..<n
+                vm.missing[i] = name[i]
 
-                    vm.missing_len = n
-                    fail(vm, E_UNDEFINED)
+            vm.missing_len = n
+            fail(vm, E_UNDEFINED)
 
         if vm.error != 0 then return
 end interpret
@@ -479,6 +495,7 @@ recover(vm: *Vm)
     if vm.error != E_QUIT
         vm.sp = vm.s0
         vm.tos = 0
+        vm.fdepth = 0
 
     vm.rp = vm.r0
     vm.state = 0

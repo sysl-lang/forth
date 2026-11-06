@@ -267,8 +267,24 @@ w_abortquote(vm: *Vm)
 
 w_dotparen(vm: *Vm) = vm.con.send(parse(vm, u8(')')))
 
+// `(`: a comment to the next `)`. Reading lines from the console or a file, a comment whose line has no
+// `)` goes on into the lines after it, as the File-Access word set extends `(`; in a string being
+// evaluated it ends with the string.
 w_paren(vm: *Vm)
-    parse(vm, u8(')'))
+    loop
+        val s = source_bytes(vm)
+        var i = usize(vm.to_in)
+
+        while i < s.len && s[i] != u8(')')
+            i += 1
+
+        if i < s.len
+            vm.to_in = isize(i + 1)
+            return
+
+        vm.to_in = vm.src_len
+
+        if vm.src_id != 0 || !refill_console(vm) then return
 
 w_backslash(vm: *Vm)
     vm.to_in = vm.src_len
@@ -806,9 +822,10 @@ w_accept(vm: *Vm)
 w_environmentq(vm: *Vm)
     if !need(vm, 2) then return
 
-    pop(vm)
-    pop(vm)
-    push(vm, 0)
+    val n = pop(vm)
+    val at = usize.wrap(pop(vm))
+
+    if !float_environment(vm, byte_at(at)[0..<usize(if n < 0 then 0 else n)]) then push(vm, 0)
 
 // `WORDS`: every visible name, newest first.
 w_words(vm: *Vm)

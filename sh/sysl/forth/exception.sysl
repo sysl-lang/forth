@@ -33,6 +33,7 @@ w_catch(vm: *Vm)
 
     val xt = usize.wrap(pop(vm))
     val depth = depth_of(vm)
+    val fdepth = vm.fdepth
     val rp = vm.rp
     val src = vm.src
     val src_len = vm.src_len
@@ -51,6 +52,7 @@ w_catch(vm: *Vm)
     vm.missing_len = 0
     vm.abort_len = 0
     set_depth(vm, depth)
+    vm.fdepth = fdepth
     vm.rp = rp
     vm.src = src
     vm.src_len = src_len
