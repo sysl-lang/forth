@@ -105,7 +105,11 @@ flags_of(h: usize) -> u8 = byte_at(h + CELL)[0]
 
 name_of(h: usize) -> []const u8 = byte_at(h + CELL + 2)[0..<usize(byte_at(h + CELL + 1)[0])]
 
-xt_of(h: usize) -> usize = aligned(h + CELL + 2 + usize(byte_at(h + CELL + 1)[0]))
+// A synonym's token is the token of the word it names, kept in its code cell.
+xt_of(h: usize) -> usize
+    val at = aligned(h + CELL + 2 + usize(byte_at(h + CELL + 1)[0]))
+
+    if flags_of(h) & F_SYNONYM != 0 then usize.wrap(cell_at(at)[0]) else at
 
 set_flag(h: usize, f: u8)
     byte_at(h + CELL)[0] = byte_at(h + CELL)[0] | f

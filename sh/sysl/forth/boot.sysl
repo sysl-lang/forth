@@ -34,6 +34,7 @@ boot(vm: *Vm, lo: usize, size: usize, con: *Console)
     vm.subst = 0
     boot_ext(vm)
     define_words(vm)
+    vm.fence = vm.here
 
 define_words(vm: *Vm)
     // The stacks.
@@ -124,6 +125,7 @@ define_words(vm: *Vm)
     // Control flow. The run-time halves are primitives; the compiling halves are immediate.
     prim(vm, "EXIT", &p_exit)
     prim(vm, "EXECUTE", &p_execute)
+    vm.xt_execute = vm.latest_xt
     prim(vm, "I", &p_i)
     prim(vm, "J", &p_j)
     prim(vm, "LEAVE", &p_leave)
@@ -294,3 +296,31 @@ define_words(vm: *Vm)
     slow(vm, ".R", &w_dot_r)
     slow(vm, "U.R", &w_u_dot_r)
     slow(vm, "HOLDS", &w_holds)
+
+    // The Programming-Tools words and their extensions not already above: `.S`, `WORDS`, `BYE` and
+    // `STATE` are.
+    slow(vm, "?", &w_question)
+    slow(vm, "DUMP", &w_dump)
+    slow(vm, "SEE", &w_see)
+    slow(vm, "AHEAD", &w_ahead)
+    immediate(vm)
+    slow(vm, "CS-PICK", &w_pick)
+    slow(vm, "CS-ROLL", &w_roll)
+    slow(vm, "FORGET", &w_forget)
+    slow(vm, "N>R", &w_n_to_r)
+    slow(vm, "NR>", &w_n_r_from)
+    slow(vm, "NAME>COMPILE", &w_name_to_compile)
+    slow(vm, "NAME>INTERPRET", &w_name_to_interpret)
+    slow(vm, "NAME>STRING", &w_name_to_string)
+    slow(vm, "SYNONYM", &w_synonym)
+    slow(vm, "TRAVERSE-WORDLIST", &w_traverse_wordlist)
+    slow(vm, "[DEFINED]", &w_bracket_defined)
+    immediate(vm)
+    slow(vm, "[UNDEFINED]", &w_bracket_undefined)
+    immediate(vm)
+    slow(vm, "[IF]", &w_bracket_if)
+    immediate(vm)
+    slow(vm, "[ELSE]", &w_bracket_else)
+    immediate(vm)
+    slow(vm, "[THEN]", &w_bracket_then)
+    immediate(vm)

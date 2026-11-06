@@ -55,6 +55,8 @@ const HOLD_BYTES: usize = 136
 // Header flags.
 const F_IMMEDIATE: u8 = 1
 const F_HIDDEN: u8 = 2
+// A `SYNONYM`: the header's code cell holds the token of the word it is another name for.
+const F_SYNONYM: u8 = 4
 
 // The codes `THROW` would use for these conditions in Forth 2012, so that the numbers mean what a
 // Forth programmer expects.
@@ -68,12 +70,14 @@ const E_DICTFULL: isize = -8
 const E_DIVZERO: isize = -10
 const E_UNDEFINED: isize = -13
 const E_COMPILEONLY: isize = -14
+const E_FORGET: isize = -15
 const E_ZERONAME: isize = -16
 const E_NAMELEN: isize = -19
 const E_UNSUPPORTED: isize = -21
 const E_CONTROL: isize = -22
 const E_RANGE: isize = -24
 const E_QUIT: isize = -56
+const E_IFELSE: isize = -58
 const E_SUBSTITUTE: isize = -78
 // What `interpret_source` answers when `BYE` asked the host to end the program. `BYE` stops the
 // threads as a fault does, with this code and `Vm.bye` set, and no `CATCH` catches it.
@@ -142,8 +146,13 @@ struct Vm
     // Which of the two transient-string buffers `S"` fills next.
     sidx: isize
 
-    // `COMPILE,`, which `POSTPONE` compiles a call to.
+    // `COMPILE,`, which `POSTPONE` compiles a call to, and `EXECUTE`; `NAME>COMPILE` answers one of
+    // them.
     xt_compile: usize
+    xt_execute: usize
+
+    // The end of the words the machine was built with, which `FORGET` will not take back.
+    fence: usize
 
     // The newest substitution `REPLACES` defined, 0 for none.
     subst: usize

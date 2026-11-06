@@ -77,6 +77,12 @@ w_rbracket(vm: *Vm)
 
 // The token of the next name in the input, or a fault naming it.
 parse_xt(vm: *Vm) -> usize
+    val h = parse_header(vm)
+
+    if h == 0 then 0 else xt_of(h)
+
+// The header of the next name in the input, or a fault naming it and 0.
+parse_header(vm: *Vm) -> usize
     val name = parse_name(vm)
 
     if name.len == 0
@@ -95,7 +101,7 @@ parse_xt(vm: *Vm) -> usize
         fail(vm, E_UNDEFINED)
         return 0
 
-    xt_of(h)
+    h
 
 w_tick(vm: *Vm)
     val xt = parse_xt(vm)
@@ -760,23 +766,22 @@ w_dot(vm: *Vm)
 w_udot(vm: *Vm)
     if need(vm, 1) then show(vm, UDCell(usize.wrap(pop(vm))), false)
 
-// `.S`: the stack, deepest first, without changing it.
+// `.S`: the depth in angle brackets, then the stack deepest first, each item as `.` shows it, without
+// changing it: `<3> 1 -2 3 `.
 w_dots(vm: *Vm)
     val d = depth_of(vm)
+    val digits = picture(vm, UDCell(usize(d)), false)
+
+    if vm.error != 0 then return
 
     vm.con.send("<".bytes)
-
-    val saved = vm.base
-
-    show(vm, UDCell(usize(d)), false)
+    vm.con.send(digits)
     vm.con.send("> ".bytes)
 
     for k in 1..<d + 1
         val x = if k == d then vm.tos else vm.s0[k + 1]
 
         show(vm, magnitude_of(x), x < 0)
-
-    vm.base = saved
 
 // ---------------------------------------------------------------------------------------------------
 // Input.

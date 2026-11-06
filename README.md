@@ -59,7 +59,7 @@ input never starts the REPL: `forth < file.fs` reads the file as it always has, 
 
 ## The words
 
-199 of them:
+218 of them:
 
 - **Stack:** `DUP ?DUP DROP SWAP OVER ROT NIP TUCK 2DUP 2DROP 2SWAP 2OVER >R R> R@ DEPTH PICK ROLL`
 - **Arithmetic and logic:** `+ - * / MOD /MOD */ */MOD AND OR XOR INVERT NEGATE ABS 1+ 1- 2* 2/
@@ -81,6 +81,11 @@ input never starts the REPL: `forth < file.fs` reads the file as it always has, 
   RESTORE-INPUT .R U.R HOLDS`
 - **String, and `2VARIABLE` from the Double-Number words:** `COMPARE SEARCH -TRAILING /STRING CMOVE
   CMOVE> BLANK SLITERAL REPLACES SUBSTITUTE UNESCAPE 2VARIABLE`
+- **Programming-Tools, beyond `.S WORDS BYE STATE` above:** `? DUMP SEE AHEAD CS-PICK CS-ROLL FORGET
+  N>R NR> NAME>COMPILE NAME>INTERPRET NAME>STRING SYNONYM TRAVERSE-WORDLIST [DEFINED] [UNDEFINED]
+  [IF] [ELSE] [THEN]`. `ASSEMBLER`, `CODE`, `;CODE` and `EDITOR` are left out: what they do is the
+  implementation's own (an assembler for the host's instruction set, a text editor), and there is
+  neither here.
 
 The text interpreter also reads `#123`, `$FF`, `%101` and `'c'`, Forth 2012's number prefixes.
 
@@ -96,7 +101,40 @@ the target's address width with `#if ptr16` / `ptr32` / `ptr64`:
 | 32 bits (`thumb`, `riscv32`, `wasm32`, `x86`) | `isize`, 4 bytes | `i64` |
 | 16 bits (`craft`) | `isize`, 2 bytes | `i32` |
 
-`ENVIRONMENT?` answers false to every query. There is no `DOUBLE` word set and no `WORDLIST`s yet.
+`ENVIRONMENT?` answers false to every query. There is no `DOUBLE` word set and no `WORDLIST`s yet, so
+there is one word list: a name token is a header's address, and `TRAVERSE-WORDLIST` walks the whole
+dictionary, newest first, whatever word list it is given.
+
+**What the tools show.** `.S` is `<3> 1 -2 3 `: the depth, then the items deepest first as `.` shows
+them. `DUMP` is in hexadecimal whatever `BASE` is, sixteen bytes a line, each line the address, the
+bytes, and the bytes as text with a dot for any that is not printable. `SEE` reads a colon definition
+back out of its thread, a cell to a line with its offset in cells; a primitive is named by the header
+whose code it is, a literal is its number, a string word shows its string, and a branch shows the
+offset it goes to:
+
+```
+: T 5 0 DO I 2 MOD IF I . ELSE ." x" THEN LOOP ;  SEE T
+: T
+   0: 5
+   2: 0
+   4: DO 22
+   6: I
+   7: 2
+   9: MOD
+  10: 0BRANCH 17
+  12: I
+  13: .
+  15: BRANCH 20
+  17: ." x"
+  20: LOOP 6
+  22: ;
+```
+
+A word made with `DOES>` is listed from the thread after its `DOES>`; a constant, a variable and a
+synonym say what made them, and a built-in word says whether it is a primitive or written in sysl.
+`FORGET` takes the dictionary back to before the word, and refuses a word the machine was built with
+(`-15`, invalid `FORGET`). `[IF]` and `[ELSE]` skip across lines, and a source that ends before the
+`[THEN]` is `-58`.
 
 **Every fault is a `THROW`**, with Forth 2012's code for it (-4 for a stack underflow, -13 for an
 undefined word, -10 for a division by zero), so `CATCH` catches what the machine raises exactly as it
@@ -202,7 +240,7 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
 
 ## Tests
 
-`sysl test .` runs 79 tests (65 with `--no-default-features`, which leaves out the host module's):
+`sysl test .` runs 94 tests (80 with `--no-default-features`, which leaves out the host module's):
 
 - **The Hayes Core tests: 638 of 638 pass.** `tests/tester.fr` and `tests/core.fr` are John Hayes's
   files from [gerryjackson/forth2012-test-suite](https://github.com/gerryjackson/forth2012-test-suite)
@@ -222,6 +260,10 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
   | `tests/coreexttest.fth` | `src/coreexttest.fth` | `f35b9a78ac463985e2cfa616f19893204e25f5a51f0512324d8d45fe9e73b71b` | 383 | 0 |
   | `tests/exceptiontest.fth` | `src/exceptiontest.fth` | `92bce976b74a799f0a7c9f4200e46832eea6371d117e522dea4550a6fe067083` | 9 | 0 |
   | `tests/stringtest.fth` | `src/stringtest.fth` | `6f78aafab33acf2c3e09ec428447d539e2f8afe71fa3ca2ed329b2999b129cde` | 135 | 0 |
+  | `tests/toolstest.fth` | `src/toolstest.fth` | `d410235d133d9eb6f0b322a3b1ac647354cbe12f37d1ce8a3f2cb2317a5faa7f` | 50 | 0 |
+
+  `toolstest.fth` skips its `TRAVERSE-WORDLIST` and `NAME>` tests where the Search-Order words are
+  missing, as they are here; the unit tests below cover those words instead.
 
   The suite's helpers, loaded before the word-set files as its own `runtests.fth` loads them:
   `tests/utilities.fth` (`src/utilities.fth`,
@@ -246,6 +288,13 @@ saves `r7` and `lr` around the jump, so a Cortex-M `NEXT` costs a push and a pop
 - The Core Extension words where the suite does not reach: an empty `DEFER`, `MARKER`, `CASE` with no
   match, `S\"` and `C"` interpreted, `RESTORE-INPUT` of another source, `2R>` underflow, `.R` fields,
   a negative `BUFFER:`.
+- The Programming-Tools words where the suite does not reach: `.S` with no, one and many items,
+  negative ones and another `BASE`; `?`; `DUMP`'s lines byte for byte; `SEE` of a definition with a
+  loop, an `IF`/`ELSE`, literals and strings, one with an `EXIT` a branch jumps over, a `DOES>` word, a
+  constant, a variable, a synonym and the built-in kinds; `WORDS`; `FORGET` putting `HERE` back and
+  an older word of the name, and refusing a built-in; nested `[IF]` across lines and a missing
+  `[THEN]`; `N>R` faults; `SYNONYM` of an immediate word; `TRAVERSE-WORDLIST` stopping early; and
+  `NAME>COMPILE`.
 - The host console's line splitting, and `interpret_line`'s answers.
 - The REPL, driven through `repl`'s `MockTerminal` with scripted keys and checked against the exact
   bytes sent to the terminal: ` ok` after a line, a definition across two lines at the continuation

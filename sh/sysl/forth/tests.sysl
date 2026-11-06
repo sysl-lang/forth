@@ -488,6 +488,207 @@ string_unescape()
 string_2variable()
     assert(says("2VARIABLE V V 2@ . . 1 2 V 2! V 2@ . .", "0 0 2 1 "), "two cells")
 
+@test("the Forth 2012 suite's Programming-Tools tests all pass")
+forth2012_tools()
+    before_word_sets()
+    also(embed("../../../tests/toolstest.fth"))
+
+    val (tests, failed, total) = tally_set("#TESTS @ ERRORS[] TOOLS-ERRORS + @ TOTAL-ERRORS @")
+
+    assert(tests == 50, "every test in toolstest.fth ran")
+    assert(failed == 0, "none failed")
+    assert(total == 0, "and none before it")
+    assert(vm.faults == 0, "no line faulted")
+
+// ---------------------------------------------------------------------------------------------------
+// The Programming-Tools words, where the suite does not reach.
+
+@test(".S shows the depth and every item deepest first, negative ones signed, and leaves the stack")
+tools_dot_s()
+    assert(says(".S", "<0> "), "empty")
+    assert(says("5 .S", "<1> 5 "), "one item")
+    assert(says("1 -2 3 .S", "<3> 1 -2 3 "), "many, with a negative cell")
+    assert(says("HEX -1 1F 12 .S", "<3> -1 1F 12 "), "in the current base")
+    assert(says("7 8 .S DEPTH . . .", "<2> 7 8 2 8 7 "), "the stack is left as it was")
+
+@test("? shows the cell at an address as . does")
+tools_question()
+    assert(says("VARIABLE V -5 V ! V ? 12 V ! V ?", "-5 12 "), "signed")
+
+// `x` as `2 * CELL` hexadecimal digits, as `DUMP` shows an address.
+hex_address(x: usize, into: []u8) -> []const u8
+    val n = 2 * CELL
+
+    for i in 0..<n
+        into[i] = digit_char((x >> ((n - 1 - i) * 4)) & 15)
+
+    into[0..<n]
+
+@test("DUMP shows sixteen bytes a line, as hex and as text, whatever BASE is")
+tools_dump()
+    start("".bytes)
+    evaluate(&vm, "CREATE B 65 C, 0 C, 126 C, 200 C, 10 C, 66 C, 67 C, 68 C, 69 C, 70 C, 71 C, 72 C, 73 C, 74 C, 75 C, 76 C, 77 C, DECIMAL B".bytes)
+
+    val b = usize.wrap(pop(&vm))
+    var expected: [256]u8 = [0; 256]
+    var n: usize = 0
+    var addr: [16]u8 = [0; 16]
+
+    for c in hex_address(b, addr[..])
+        expected[n] = c
+        n += 1
+
+    for c in ": 41 00 7E C8 0A 42 43 44 45 46 47 48 49 4A 4B 4C  A.~..BCDEFGHIJKL\n".bytes
+        expected[n] = c
+        n += 1
+
+    for c in hex_address(b + 16, addr[..])
+        expected[n] = c
+        n += 1
+
+    // Fifteen absent bytes of three columns each, then the two spaces before the text.
+    for c in ": 4D".bytes
+        expected[n] = c
+        n += 1
+
+    for _ in 0..<15 * 3 + 2
+        expected[n] = 32
+        n += 1
+
+    for c in "M\n".bytes
+        expected[n] = c
+        n += 1
+
+    evaluate(&vm, "B 17 DUMP".bytes)
+    assert(vm.error == 0, "dumped")
+    assert(written(&con) == expected[0..<n], "two lines, the second padded so its text lines up")
+    evaluate(&vm, "B 0 DUMP BASE @".bytes)
+    assert(written(&con) == expected[0..<n] && pop(&vm) == 10, "nothing for no bytes, and BASE is left alone")
+
+@test("SEE lists a colon definition a cell to a line, with its branches, literals and strings")
+tools_see_colon()
+    val listing = """
+        : T
+           0: 5
+           2: 0
+           4: DO 22
+           6: I
+           7: 2
+           9: MOD
+          10: 0BRANCH 17
+          12: I
+          13: .
+          15: BRANCH 20
+          17: ." x"
+          20: LOOP 6
+          22: -7
+          24: S" hi"
+          27: TYPE
+          29: ;
+        """
+
+    assert(says(": T 5 0 DO I 2 MOD IF I . ELSE .\" x\" THEN LOOP -7 S\" hi\" TYPE ; SEE T", listing), "the whole thread")
+
+@test("SEE goes past an EXIT that a branch jumps over, and stops at the one that ends the definition")
+tools_see_exit()
+    val listing = """
+        : B
+           0: 1
+           2: 0BRANCH 5
+           4: EXIT
+           5: B
+           7: ; IMMEDIATE
+        """
+
+    assert(says(": B 1 IF EXIT THEN RECURSE ; IMMEDIATE SEE B", listing), "an EXIT inside, RECURSE by name, and IMMEDIATE")
+
+@test("SEE lists a word made with DOES> from the thread after its DOES>, and names every other kind")
+tools_see_others()
+    val defining = """
+        : C
+           0: CREATE
+           2: ,
+           4: DOES>
+           5: @
+           6: ;
+        CREATE FIVE DOES>
+           0: @
+           1: ;
+        """
+
+    assert(says(": C CREATE , DOES> @ ; 5 C FIVE SEE C SEE FIVE", defining), "the defining word and its child")
+    assert(says("-7 CONSTANT K SEE K VARIABLE V SEE V", "-7 CONSTANT K\nCREATE V\n"), "a constant and a variable")
+    assert(says("SEE DUP SEE HERE SEE IF", "DUP is a primitive\nHERE is written in sysl\nIF is written in sysl, and immediate\n"), "the built-in kinds")
+    assert(says("SYNONYM TWIN DUP SEE TWIN", "SYNONYM TWIN DUP\n"), "a synonym")
+    assert(says(": W 1+ CHAR+ ; SEE W", ": W\n   0: 1+\n   1: 1+\n   2: ;\n"), "a code two names share is shown by the older")
+
+@test("SEE and FORGET of a word that is not there name it, as an undefined word is named")
+tools_see_undefined()
+    assert(says("SEE NOPE", "NOPE ?\n"), "SEE")
+    assert(says("FORGET NOPE", "NOPE ?\n"), "FORGET")
+    assert(says("SEE", "attempt to use zero-length string as a name\n"), "no name at all")
+
+@test("WORDS lists every visible word newest first, and a forgotten one is gone")
+tools_words()
+    val all = transcript(": AA ; : BB ; WORDS")
+
+    assert(all.len > 6 && all[0..<6] == "BB AA ".bytes && all[all.len - 1] == 10, "newest first, one line")
+
+    val after = transcript(": AA ; : BB ; FORGET BB WORDS")
+
+    assert(after[0..<3] == "AA ".bytes, "BB is gone")
+
+@test("FORGET takes HERE back to before the word, and an older word of the name comes back")
+tools_forget()
+    start("".bytes)
+    evaluate(&vm, "HERE : X 1 ; VARIABLE Y 100 ALLOT FORGET X HERE".bytes)
+    assert(vm.error == 0 && pop(&vm) == pop(&vm), "HERE is back")
+    assert(find(&vm, "Y".bytes) == 0 && find(&vm, "X".bytes) == 0, "X and everything after it are gone")
+    assert(says(": X 1 ; : X 2 ; FORGET X X .", "1 "), "the older X")
+    assert(says("FORGET DUP", "invalid FORGET\n"), "a built-in word is kept")
+
+@test("[IF] nests, spans lines, matches its words whatever their case, and wants its [THEN]")
+tools_nested_if()
+    assert(says("0 [IF]\n 1 [if] 2 [ELSE] 3 [THEN]\n[else] 4 [THEN] .", "4 "), "a nested [IF] in the skipped part")
+    assert(says("-1 [IF] 0 [IF] 2 [ELSE] 3 [IF] 5 [THEN] [THEN] [ELSE] 4 [THEN] . DEPTH .", "5 0 "), "three deep")
+    assert(says("0 [IF] 1 [ELSE] 0 [IF] 2 [ELSE] 3 [THEN] [THEN] .", "3 "), "an [IF] inside the [ELSE] part")
+    assert(says("0 [IF] 1 2", "[IF], [ELSE], or [THEN] exception\n"), "no [THEN] before the source ends")
+    assert(says("S\" 0 [IF] 1\" EVALUATE", "[IF], [ELSE], or [THEN] exception\n"), "nor before an evaluated string ends")
+
+@test("N>R and NR> refuse a negative count, too few items and an empty return stack")
+tools_n_to_r_faults()
+    assert(says("1 2 3 N>R", "stack underflow\n"), "too few items")
+    assert(says("-1 N>R", "invalid numeric argument\n"), "a negative count")
+    assert(says(": T NR> ; T", "return stack underflow\n"), "nothing put there")
+    assert(says(": T 0 N>R NR> . ; T", "0 "), "none at all")
+
+@test("SYNONYM answers the old word's token, and is immediate when the old word is")
+tools_synonym()
+    assert(says("SYNONYM TWIN DUP ' TWIN ' DUP = .", "-1 "), "the same token")
+    assert(says("SYNONYM WHEN IF : T WHEN 1 ELSE 2 THEN ; 0 T .", "2 "), "compiled as IF is")
+
+@test("TRAVERSE-WORDLIST visits the newest word first and stops when told")
+tools_traverse()
+    assert(says(": OLD ; : SHOW NAME>STRING TYPE SPACE 0 ; ' SHOW 0 TRAVERSE-WORDLIST", "SHOW "), "the newest, then stop")
+    assert(says("VARIABLE N : CT DROP 1 N +! N @ 3 < ; ' CT 0 TRAVERSE-WORDLIST N ?", "3 "), "three visits")
+
+@test("NAME>COMPILE answers EXECUTE for an immediate word and COMPILE, for any other")
+tools_name_to_compile()
+    start("".bytes)
+
+    val h = find(&vm, "IF".bytes)
+    val d = find(&vm, "DUP".bytes)
+
+    push(&vm, isize.wrap(h))
+    evaluate(&vm, "NAME>COMPILE".bytes)
+    assert(usize.wrap(pop(&vm)) == vm.xt_execute && usize.wrap(pop(&vm)) == xt_of(h), "immediate")
+    push(&vm, isize.wrap(d))
+    evaluate(&vm, "NAME>COMPILE".bytes)
+    assert(usize.wrap(pop(&vm)) == vm.xt_compile && usize.wrap(pop(&vm)) == xt_of(d), "not immediate")
+    push(&vm, isize.wrap(d))
+    evaluate(&vm, "NAME>INTERPRET".bytes)
+    assert(usize.wrap(pop(&vm)) == xt_of(d), "NAME>INTERPRET is the token")
+
 // ---------------------------------------------------------------------------------------------------
 // CATCH and THROW.
 

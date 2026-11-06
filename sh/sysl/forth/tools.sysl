@@ -1,0 +1,453 @@
+module sh.sysl.forth
+@no_alloc
+
+import sysl.raw.ptr_cast
+
+// The Programming-Tools word set and its extensions: looking at the stack, memory and the dictionary,
+// conditional compilation, and the words that reach into the compiler's control-flow stack and the
+// dictionary's names.
+//
+// **There is one word list**, so a name token is a header's address, and `TRAVERSE-WORDLIST` walks the
+// whole dictionary, newest first, whatever word list it is handed.
+//
+// **`SEE` reads a definition back out of its thread.** Every cell of a thread is the address of a
+// primitive's code, so a primitive is named by finding the header whose code cell holds that address;
+// a word that is not a primitive is two cells, its code and its token, and is named by the header the
+// token belongs to. The primitives only the compiler lays down — a literal, a branch, the run-time
+// halves of `DO`, `LOOP`, `OF` and the string words — are shown with their operands.
+
+// ---------------------------------------------------------------------------------------------------
+// Looking at the stack and at memory.
+
+// `?` ( a-addr -- ): the cell at an address, as `.` shows it.
+w_question(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val x = cell_at(usize.wrap(pop(vm)))[0]
+
+    show(vm, magnitude_of(x), x < 0)
+
+// `n` hexadecimal digits of `x`, most significant first.
+send_hex(vm: *Vm, x: usize, n: usize)
+    for i in 0..<n
+        vm.con.emit(digit_char((x >> ((n - 1 - i) * 4)) & 15))
+
+// A count in decimal, whatever `BASE` is.
+send_decimal(vm: *Vm, x: usize)
+    var digits: [24]u8 = [0; 24]
+    var n: usize = 0
+    var rest = x
+
+    loop
+        digits[n] = digit_char(rest % 10)
+        n += 1
+        rest /= 10
+
+        if rest == 0 then break
+
+    while n > 0
+        n -= 1
+        vm.con.emit(digits[n])
+
+// The bytes `DUMP` shows on each line.
+const DUMP_WIDTH: usize = 16
+
+// `DUMP` ( addr u -- ): `u` bytes from `addr`, sixteen to a line, in hexadecimal whatever `BASE` is.
+// Each line is the address of its first byte, a colon, the bytes as pairs of digits, and the same
+// bytes as text with a dot for any that is not printable. A short last line is padded so that its text
+// lines up with the lines above.
+w_dump(vm: *Vm)
+    if !need(vm, 2) then return
+
+    val n = pop(vm)
+    val at = usize.wrap(pop(vm))
+
+    if n <= 0 then return
+
+    var done: usize = 0
+
+    while done < usize(n)
+        val line = at + done
+        val count = if usize(n) - done < DUMP_WIDTH then usize(n) - done else DUMP_WIDTH
+
+        send_hex(vm, line, 2 * CELL)
+        vm.con.emit(u8(':'))
+
+        for i in 0..<DUMP_WIDTH
+            vm.con.emit(32)
+
+            if i < count
+                send_hex(vm, usize(byte_at(line)[i]), 2)
+            else
+                vm.con.send("  ".bytes)
+
+        vm.con.send("  ".bytes)
+
+        for i in 0..<count
+            val b = byte_at(line)[i]
+
+            vm.con.emit(if b >= 32 && b < 127 then b else u8('.'))
+
+        vm.con.emit(10)
+        done += count
+end w_dump
+
+// ---------------------------------------------------------------------------------------------------
+// Names.
+
+// The oldest header whose token is `xt`, or 0. The oldest, so that a synonym's own token is named by
+// the word it stands for.
+header_of_xt(vm: *Vm, xt: usize) -> usize
+    var h = vm.latest
+    var found: usize = 0
+
+    while h != 0
+        if xt_of(h) == xt then found = h
+
+        h = link_of(h)
+
+    found
+
+// The oldest header of a primitive whose code is `code`, or 0. The oldest, so that `1+` is not shown
+// as `CHAR+`, which shares its code.
+header_of_code(vm: *Vm, code: usize) -> usize
+    var h = vm.latest
+    var found: usize = 0
+
+    while h != 0
+        if flags_of(h) & F_SYNONYM == 0 && usize.wrap(cell_at(xt_of(h))[0]) == code then found = h
+
+        h = link_of(h)
+
+    found
+
+// The name of the word whose token is `xt`, or `<noname>` for one with no header.
+send_name_of_xt(vm: *Vm, xt: usize)
+    val h = header_of_xt(vm, xt)
+
+    vm.con.send(if h == 0 then "<noname>".bytes else name_of(h))
+
+// `NAME>STRING` ( nt -- c-addr u ).
+w_name_to_string(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val h = usize.wrap(pop(vm))
+    val name = name_of(h)
+
+    push(vm, isize.wrap(h + CELL + 2))
+    push(vm, isize(name.len))
+
+// `NAME>INTERPRET` ( nt -- xt ). Every word here can be interpreted, so this is always its token.
+w_name_to_interpret(vm: *Vm)
+    if need(vm, 1) then push(vm, isize.wrap(xt_of(usize.wrap(pop(vm)))))
+
+// `NAME>COMPILE` ( nt -- x xt ): the token, and `EXECUTE` for an immediate word or `COMPILE,` for any
+// other, so that executing the pair does what the compiler does with the word.
+w_name_to_compile(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val h = usize.wrap(pop(vm))
+
+    push(vm, isize.wrap(xt_of(h)))
+    push(vm, isize.wrap(if flags_of(h) & F_IMMEDIATE != 0 then vm.xt_execute else vm.xt_compile))
+
+// `TRAVERSE-WORDLIST` ( i*x xt wid -- j*x ): execute `xt` ( k*x nt -- l*x flag ) with each visible
+// word's name token, newest first, until it answers false or the words run out.
+w_traverse_wordlist(vm: *Vm)
+    if !need(vm, 2) then return
+
+    pop(vm)
+
+    val xt = usize.wrap(pop(vm))
+    var h = vm.latest
+
+    while h != 0
+        val next = link_of(h)
+
+        if flags_of(h) & F_HIDDEN == 0
+            push(vm, isize.wrap(h))
+            execute(vm, xt)
+
+            if vm.error != 0 || !need(vm, 1) then return
+            if pop(vm) == 0 then return
+
+        h = next
+
+// `SYNONYM` ( "newname" "oldname" -- ): a second name for a word. The new header's code cell holds the
+// old word's token and the header is marked a synonym, so finding the new name answers the old token,
+// immediate if the old word is.
+w_synonym(vm: *Vm)
+    val name = parse_name(vm)
+    val oh = parse_header(vm)
+
+    if oh == 0 then return
+
+    val old = xt_of(oh)
+    val imm = flags_of(oh) & F_IMMEDIATE
+
+    if !header(vm, name, &doslow) then return
+
+    cell_at(vm.latest_xt)[0] = isize.wrap(old)
+    set_flag(vm.latest, F_SYNONYM | imm)
+    vm.latest_xt = old
+
+// `FORGET` ( "name" -- ): the dictionary taken back to before the newest word of that name. A word the
+// machine was built with cannot be forgotten.
+w_forget(vm: *Vm)
+    val h = parse_header(vm)
+
+    if h == 0 then return
+    if h < vm.fence then return fail(vm, E_FORGET)
+
+    vm.here = h
+    vm.latest = link_of(h)
+    vm.latest_xt = if vm.latest == 0 then 0 else xt_of(vm.latest)
+    trim_substitutions(vm)
+
+// ---------------------------------------------------------------------------------------------------
+// The compiler's control-flow stack, which is the data stack.
+
+// `AHEAD`: a forward branch taken always, resolved by `THEN`.
+w_ahead(vm: *Vm) = push(vm, forward(vm, &p_branch))
+
+// `N>R` ( i*n +n -- ) ( R: -- j*x +n ): `n` items and their count onto the return stack.
+w_n_to_r(vm: *Vm)
+    if !need(vm, 1) then return
+
+    val n = vm.tos
+
+    if n < 0 then return fail(vm, E_RANGE)
+    if !need(vm, n + 1) then return
+    if vm.rlim - vm.rp <= n + 1 then return fail(vm, E_RSOVERFLOW)
+
+    pop(vm)
+
+    val rp = vm.rp
+
+    for k in 0..<n
+        rp[n - k] = pop(vm)
+
+    rp[n + 1] = n
+    vm.rp = &rp[n + 1]
+
+// `NR>` ( -- i*x +n ) ( R: j*x +n -- ): what `N>R` put on the return stack, in the order it was.
+w_n_r_from(vm: *Vm)
+    val rp = vm.rp
+
+    if rp - vm.r0 < 1 then return fail(vm, E_RSUNDERFLOW)
+
+    val n = rp[0]
+
+    if n < 0 || rp - vm.r0 < n + 1 then return fail(vm, E_RSUNDERFLOW)
+    if !room(vm, n + 1) then return
+
+    for k in 0..<n
+        push(vm, rp[k - n])
+
+    push(vm, n)
+    vm.rp = &rp[-(n + 1)]
+
+// ---------------------------------------------------------------------------------------------------
+// Conditional compilation.
+
+// `[DEFINED]` ( "name" -- flag ) and `[UNDEFINED]` ( "name" -- flag ).
+w_bracket_defined(vm: *Vm) = push(vm, flag(find(vm, parse_name(vm)) != 0))
+
+w_bracket_undefined(vm: *Vm) = push(vm, flag(find(vm, parse_name(vm)) == 0))
+
+// `[ELSE]`: skip the source, line after line, to the `[THEN]` that ends this `[IF]`, or to its `[ELSE]`
+// when the skip began at a false `[IF]`. A nested `[IF]` is skipped whole; names are compared whatever
+// their case, and everything between them is discarded unread, comments and strings included. Running
+// out of source first is the standard's -58.
+w_bracket_else(vm: *Vm)
+    var level = 1
+
+    loop
+        val name = parse_name(vm)
+
+        if name.len == 0
+            if vm.src_id != 0 || !refill_console(vm) then return fail(vm, E_IFELSE)
+        else if same_name(name, "[IF]".bytes)
+            level += 1
+        else if same_name(name, "[ELSE]".bytes)
+            if level == 1 then return
+        else if same_name(name, "[THEN]".bytes)
+            level -= 1
+
+            if level == 0 then return
+
+// `[IF]` ( flag -- ): go on for a true flag; skip to the `[ELSE]` or `[THEN]` for a false one.
+w_bracket_if(vm: *Vm)
+    if !need(vm, 1) then return
+
+    if pop(vm) == 0 then w_bracket_else(vm)
+
+// `[THEN]` does nothing: it is only a mark for `[ELSE]` to find.
+w_bracket_then(vm: *Vm) = ()
+
+// ---------------------------------------------------------------------------------------------------
+// `SEE`.
+
+// A cell of a thread, as the code it holds.
+code_at(a: usize) -> Code = ptr_cast(usize.wrap(cell_at(a)[0]))
+
+// A number as `.` pictures it, without the space after it.
+send_number(vm: *Vm, x: isize)
+    val digits = picture(vm, magnitude_of(x), x < 0)
+
+    if vm.error == 0 then vm.con.send(digits)
+
+// An inline string's text, and the address of the cell after it.
+inline_text(a: usize) -> ([]const u8, usize)
+    val len = usize.wrap(cell_at(a)[0])
+
+    (byte_at(a + CELL)[0..<len], aligned(a + CELL + len))
+
+// The start of a line of a listing: the cell's offset from the thread's start, in cells and in
+// decimal, right-aligned in four columns, and a colon.
+send_offset(vm: *Vm, start: usize, at: usize)
+    val offset = (at - start) / CELL
+    var width: usize = 1
+    var rest = offset / 10
+
+    while rest > 0
+        width += 1
+        rest /= 10
+
+    while width < 4
+        vm.con.emit(32)
+        width += 1
+
+    send_decimal(vm, offset)
+    vm.con.send(": ".bytes)
+
+// The name `SEE` shows for a primitive whose operand is where it branches to.
+branch_name(code: Code) -> Option[string]
+    if code == &p_branch then return Some("BRANCH")
+    if code == &p_0branch then return Some("0BRANCH")
+    if code == &p_do then return Some("DO")
+    if code == &p_qdo then return Some("?DO")
+    if code == &p_loop then return Some("LOOP")
+    if code == &p_ploop then return Some("+LOOP")
+    if code == &p_of then return Some("OF")
+
+    None
+
+// The word `SEE` shows for a primitive whose operand is an inline string, with the space after it.
+string_name(code: Code) -> Option[string]
+    if code == &p_slit then return Some("S\" ")
+    if code == &p_dotq then return Some(".\" ")
+    if code == &p_abortq then return Some("ABORT\" ")
+    if code == &p_clit then return Some("C\" ")
+
+    None
+
+// A branch's name and where it goes, as an offset from the thread's start.
+send_branch(vm: *Vm, name: string, start: usize, target: usize)
+    vm.con.send(name.bytes)
+    vm.con.emit(32)
+    send_decimal(vm, (target - start) / CELL)
+
+// The thread at `start`, a cell to a line, to its final `EXIT`: the first `EXIT` that no forward branch
+// jumps past.
+see_thread(vm: *Vm, start: usize)
+    var at = start
+    var furthest = start
+
+    while at < vm.here && vm.error == 0
+        val code = code_at(at)
+        val operand = at + CELL
+
+        send_offset(vm, start, at)
+
+        if code == &p_exit
+            if at >= furthest
+                vm.con.send(";".bytes)
+                return
+
+            vm.con.send("EXIT".bytes)
+            at = operand
+        else if code == &p_lit
+            send_number(vm, cell_at(operand)[0])
+            at = operand + CELL
+        else if branch_name(code) is Some(name)
+            val target = usize.wrap(cell_at(operand)[0])
+
+            send_branch(vm, name, start, target)
+
+            if target > furthest then furthest = target
+
+            at = operand + CELL
+        else if string_name(code) is Some(name)
+            val (text, after) = inline_text(operand)
+
+            vm.con.send(name.bytes)
+            vm.con.send(text)
+            vm.con.emit(u8('"'))
+            at = after
+        else if code == &p_does
+            vm.con.send("DOES>".bytes)
+            at = operand
+        else if takes_operand(code)
+            send_name_of_xt(vm, usize.wrap(cell_at(operand)[0]))
+            at = operand + CELL
+        else
+            val h = header_of_code(vm, usize(code))
+
+            vm.con.send(if h == 0 then "<code>".bytes else name_of(h))
+            at = operand
+
+        vm.con.emit(10)
+end see_thread
+
+// `SEE` ( "name" -- ): a word as it was defined. A colon definition is listed from its thread, a cell
+// to a line with each cell's offset; a word made with `DOES>` is listed from the thread after its
+// `DOES>`; a variable, a constant and a synonym say what made them; a primitive and a word written in
+// sysl say so.
+w_see(vm: *Vm)
+    val h = parse_header(vm)
+
+    if h == 0 then return
+
+    val xt = xt_of(h)
+    val code = code_at(xt)
+    val imm = flags_of(h) & F_IMMEDIATE != 0
+
+    if flags_of(h) & F_SYNONYM != 0
+        vm.con.send("SYNONYM ".bytes)
+        vm.con.send(name_of(h))
+        vm.con.emit(32)
+        send_name_of_xt(vm, xt)
+        vm.con.emit(10)
+    else if code == &docol
+        vm.con.send(": ".bytes)
+        vm.con.send(name_of(h))
+        vm.con.emit(10)
+        see_thread(vm, xt + 2 * CELL)
+
+        if imm then vm.con.send(" IMMEDIATE".bytes)
+
+        vm.con.emit(10)
+    else if code == &dodoes
+        vm.con.send("CREATE ".bytes)
+        vm.con.send(name_of(h))
+        vm.con.send(" DOES>\n".bytes)
+        see_thread(vm, usize.wrap(cell_at(xt + CELL)[0]))
+        vm.con.emit(10)
+    else if code == &dovar
+        vm.con.send("CREATE ".bytes)
+        vm.con.send(name_of(h))
+        vm.con.emit(10)
+    else if code == &doconst
+        send_number(vm, cell_at(xt + 2 * CELL)[0])
+        vm.con.send(" CONSTANT ".bytes)
+        vm.con.send(name_of(h))
+        vm.con.emit(10)
+    else
+        vm.con.send(name_of(h))
+        vm.con.send(if code == &doslow then " is written in sysl".bytes else " is a primitive".bytes)
+
+        if imm then vm.con.send(", and immediate".bytes)
+
+        vm.con.emit(10)
+end w_see
