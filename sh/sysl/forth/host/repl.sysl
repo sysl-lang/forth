@@ -60,7 +60,7 @@ end ReplConsole
 
 // The REPL's prompts: none for a new line, as is a Forth's way, `... ` while a definition is open,
 // and a banner.
-forth_prompts() -> Prompts = Prompts("", "... ", "forth 0.1.1 -- BYE or Ctrl-D to leave")
+forth_prompts() -> Prompts = Prompts("", "... ", "forth 0.1.2 -- BYE or Ctrl-D to leave")
 
 // A REPL session over a booted machine.
 //

@@ -11,8 +11,8 @@
 
 package {
   name    = "forth"
-  version = "0.1.1"
-  sysl    = "0.10.0"
+  version = "0.1.2"
+  sysl   = "0.10.0"
 }
 
 optimization = "2"

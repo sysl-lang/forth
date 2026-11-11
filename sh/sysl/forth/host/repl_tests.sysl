@@ -42,7 +42,7 @@ count(text: string, part: string) -> usize = split(text, part).len - 1
 repl_ok_after_a_line()
     val r = repl_of("1 2 + .\r")
 
-    assert(r.text.starts_with("forth 0.1.1 -- BYE or Ctrl-D to leave\r\n"), r.text)
+    assert(r.text.starts_with("forth 0.1.2 -- BYE or Ctrl-D to leave\r\n"), r.text)
     assert(r.text.contains("1 2 + .\u{1b}[0K\r\u{1b}[7C\r\n3  ok\r\n"), r.text)
     assert(r.ended == Ended.EndOfInput, "the keys ran out")
 
