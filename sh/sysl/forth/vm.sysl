@@ -39,8 +39,13 @@ trait Console
 // Every primitive has this signature, so that each can end by replacing its own frame with the next
 // one's: the machine, the instruction pointer, the data stack pointer and the top of the data stack.
 // A primitive that stops writes the stack pointer back into the machine, so the type says it keeps
-// it.
-type Code = *extern(*Vm, *usize, @keeps *isize, isize) -> unit
+// it; one that runs a word written in sysl hands that word the machine, which may keep what it reads
+// there, so the type lets that out too.
+type Code = *extern(@lets_out *Vm, *usize, @keeps *isize, isize) -> unit
+
+// A primitive's address, for a thread or a code cell. The address is taken at `Code`, so that it
+// carries what the type says each primitive may keep.
+code_address(c: Code) -> usize = usize(c)
 
 // The bytes in a cell.
 const CELL: usize = sizeof(isize)

@@ -13,8 +13,8 @@ module sh.sysl.forth
 // with a code the nearest `CATCH` answers. After a fault it simply returns.
 
 // A word written in sysl: a plain function of the machine, so that a table of them needs no closure
-// and no allocation.
-type Native = *extern(*Vm) -> unit
+// and no allocation. A word may keep what it reads through the machine, such as a word it executes.
+type Native = *extern(@lets_out *Vm) -> unit
 
 // Define `name` as `word`, `IMMEDIATE` if `immediate` says so. Answers 0, or the code `THROW` would
 // have used for the refusal — a name that is empty (-16) or longer than 31 bytes (-19), or a

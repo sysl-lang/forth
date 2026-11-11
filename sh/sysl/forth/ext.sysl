@@ -84,7 +84,7 @@ p_clit(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 // The threads behind `DEFER` and `MARKER`, laid down when the machine boots.
 
 // A word written in sysl with no header: its token, for a thread to call.
-headless(vm: *Vm, word: *extern(*Vm) -> unit) -> usize
+headless(vm: *Vm, word: Native) -> usize
     align_here(vm)
 
     val xt = vm.here
@@ -124,7 +124,7 @@ boot_ext(vm: *Vm)
 
 // Make the newest word run `thread` with its body's address, as `DOES>` would have.
 does_thread(vm: *Vm, thread: usize)
-    cell_at(vm.latest_xt)[0] = isize.wrap(usize(&dodoes))
+    cell_at(vm.latest_xt)[0] = isize.wrap(code_address(&dodoes))
     cell_at(vm.latest_xt + CELL)[0] = isize.wrap(thread)
 
 // ---------------------------------------------------------------------------------------------------

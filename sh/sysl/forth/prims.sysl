@@ -119,7 +119,7 @@ doslow(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     vm.sp = sp
     vm.tos = tos
 
-    val word: *extern(*Vm) -> unit = ptr_cast(usize.wrap(cell_at(ip[0] + 2 * CELL)[0]))
+    val word: Native = ptr_cast(usize.wrap(cell_at(ip[0] + 2 * CELL)[0]))
 
     word(vm)
 
@@ -157,7 +157,7 @@ p_execute(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     vm.rp = rp
     vm.xbuf[0] = usize(code)
     vm.xbuf[1] = xt
-    vm.xbuf[2] = usize(&p_exit)
+    vm.xbuf[2] = code_address(&p_exit)
 
     become next(vm, &vm.xbuf[0], &sp[-1], sp[0])
 
@@ -303,7 +303,7 @@ p_abortq(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
 p_does(vm: *Vm, ip: *usize, sp: *isize, tos: isize)
     val xt = vm.latest_xt
 
-    cell_at(xt)[0] = isize.wrap(usize(&dodoes))
+    cell_at(xt)[0] = isize.wrap(code_address(&dodoes))
     cell_at(xt + CELL)[0] = isize.wrap(usize(ip))
 
     become p_exit(vm, ip, sp, tos)

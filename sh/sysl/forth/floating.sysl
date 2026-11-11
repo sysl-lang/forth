@@ -149,7 +149,7 @@ boot_floating(vm: *Vm)
 
 // Whether the word whose token is `xt` was made by `FVALUE`.
 is_fvalue(vm: *Vm, xt: usize) -> bool =
-    cell_at(xt)[0] == isize.wrap(usize(&dodoes)) && usize.wrap(cell_at(xt + CELL)[0]) == vm.fvalue_does
+    cell_at(xt)[0] == isize.wrap(code_address(&dodoes)) && usize.wrap(cell_at(xt + CELL)[0]) == vm.fvalue_does
 
 // ---------------------------------------------------------------------------------------------------
 // The stack words.

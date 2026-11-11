@@ -45,7 +45,7 @@ only(text: string) -> isize
 inner_thread_runs()
     start("".bytes)
 
-    var thread: [6]usize = [usize(&p_lit), 40, usize(&p_lit), 2, usize(&p_plus), usize(&p_halt)]
+    var thread: [6]usize = [code_address(&p_lit), 40, code_address(&p_lit), 2, code_address(&p_plus), code_address(&p_halt)]
 
     run(&vm, &thread[0])
     assert(vm.error == 0, "the thread faulted")
@@ -56,7 +56,7 @@ inner_thread_runs()
 inner_fault_returns()
     start("".bytes)
 
-    var thread: [3]usize = [usize(&p_lit), 7, usize(&p_plus)]
+    var thread: [3]usize = [code_address(&p_lit), 7, code_address(&p_plus)]
 
     run(&vm, &thread[0])
     assert(vm.error == E_UNDERFLOW, "+ with one item underflows")
@@ -119,7 +119,7 @@ dict_header_layout()
     assert(xt_of(h) % CELL == 0, "aligned")
     assert(xt_of(h) == aligned(h + CELL + 2 + 5), "right after the padded name")
     assert(vm.here == xt_of(h) + 2 * CELL, "the body is two cells past the token")
-    assert(cell_at(xt_of(h))[0] == isize(usize(&dovar)), "CREATE's code")
+    assert(cell_at(xt_of(h))[0] == isize(code_address(&dovar)), "CREATE's code")
 
 @test("HERE moves by what , C, ALLOT and ALIGN lay down")
 dict_here_moves()

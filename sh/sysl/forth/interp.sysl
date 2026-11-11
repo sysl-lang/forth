@@ -145,7 +145,7 @@ find(vm: *Vm, name: []const u8) -> usize
 prim(vm: *Vm, name: string, code: Code)
     header(vm, name.bytes, code)
 
-slow(vm: *Vm, name: string, word: *extern(*Vm) -> unit)
+slow(vm: *Vm, name: string, word: Native)
     if header(vm, name.bytes, &doslow) then comma_u(vm, usize(word))
 
 constant(vm: *Vm, name: string, x: isize)
@@ -281,9 +281,9 @@ execute(vm: *Vm, xt: usize)
 
     if takes_operand(code)
         thread[1] = xt
-        thread[2] = usize(&p_halt)
+        thread[2] = code_address(&p_halt)
     else
-        thread[1] = usize(&p_halt)
+        thread[1] = code_address(&p_halt)
 
     run(vm, &thread[0])
 
