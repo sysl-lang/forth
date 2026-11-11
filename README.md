@@ -259,10 +259,11 @@ definition of the same name. `immediate = true` makes it `IMMEDIATE`.
 
 **Direct threading through guaranteed tail calls.** A thread is a run of cells, each the address of a
 primitive, and every primitive has one signature — the machine, the instruction pointer, the data
-stack pointer and the top of the stack:
+stack pointer and the top of the stack. A primitive that stops writes the stack pointer back into
+the machine, so the type marks it `@keeps`:
 
 ```sysl
-type Code = *extern(*Vm, *usize, *isize, isize) -> unit
+type Code = *extern(*Vm, *usize, @keeps *isize, isize) -> unit
 
 @inline
 next(vm: *Vm, ip: *usize, sp: *isize, tos: isize)

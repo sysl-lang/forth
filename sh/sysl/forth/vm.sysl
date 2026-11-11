@@ -38,7 +38,9 @@ trait Console
 
 // Every primitive has this signature, so that each can end by replacing its own frame with the next
 // one's: the machine, the instruction pointer, the data stack pointer and the top of the data stack.
-type Code = *extern(*Vm, *usize, *isize, isize) -> unit
+// A primitive that stops writes the stack pointer back into the machine, so the type says it keeps
+// it.
+type Code = *extern(*Vm, *usize, @keeps *isize, isize) -> unit
 
 // The bytes in a cell.
 const CELL: usize = sizeof(isize)
